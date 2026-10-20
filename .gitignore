@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+backups/
+artifacts/
+*.sql
+*.sql.gz
+# Local archives can contain configuration, database data, or dependencies.
+*.7z
+*.zip

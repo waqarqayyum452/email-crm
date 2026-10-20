@@ -1,0 +1,106 @@
+# Testing and acceptance
+
+Automated tests must use fake transports, deterministic fixtures, and a disposable test database. They never submit live mail. Passing pure tests or a build does not prove MySQL locking, real credentials, scheduler continuity, or hosting compatibility. The final implementation report and [progress record](progress.md) distinguish executed checks from pending ones.
+
+## Commands
+
+```powershell
+npm test
+npm run build
+npm run doctor
+npm run test:integration
+```
+
+Database integration checks require `RUN_DB_TESTS=true` and a `DB_NAME` ending in `_test`. Inspect `tests/integration.test.ts` and `tests/engine-integration.test.ts` before enabling them; point only to an expendable schema. They can create/delete test rows and must never run against real CRM data. For example, in a dedicated terminal with private DB credentials already configured:
+
+```powershell
+$env:DB_NAME = 'email_crm_test'
+$env:RUN_DB_TESTS = 'true'
+npm run test:integration
+Remove-Item Env:RUN_DB_TESTS
+```
+
+Create/grant that separate database first; do not point the test variable at production. Restore `DB_NAME` to the normal local database before running the app. Integration files run sequentially because they share and reset fixture state. Verify MySQL 8 and the actual Hostinger MariaDB build independently; do not treat one engine's pass as proof for the other. The doctor only checks basic queue SQL and locks; it does not run the concurrency suite or prove scheduler cadence.
+
+## Executed local evidence
+
+Node 24.22.0 and loopback MariaDB 11.4.8 were used for the passing production build/typecheck, migration CLI, database-backed API/engine checks, and browser walkthrough. All 60 tests passed across 6 files, including the SSRF destination checks. `npm audit --omit=dev` reported 0 production dependency advisories at verification time. Local doctor passed UTC/InnoDB/locking and certificate-verified SMTP/IMAP TLS 1.3 reachability without mailbox authentication or message submission. An isolated backup/restore compared 29 tables/54 fixture rows with identical values.
+
+All 8 browser checks passed: owner login; contact create/reload and edit; note/task/stage persistence; settings save; template create/duplicate/sample preview; campaign draft, personalization and excluded unknown-consent contact; navigation; desktop/tablet/mobile overflow checks at 1024px and 390px. No observed page/runtime/API failures remained. The controlled fixture's unknown consent was intentionally preserved and excluded from sending. This is limited browser acceptance, not a comprehensive keyboard/screen-reader audit or proof of every action under every failure condition.
+
+The suite uses real database persistence with fake mailbox transports. Separate loopback SMTP/MIME fixtures exercise the installed libraries, including a disconnect after full DATA with unknown acceptance. MySQL 8, the actual Hostinger account/runtime, real mailbox authentication, scheduled cron continuity and live delivery remain unverified. See [progress.md](progress.md) for the current evidence record.
+
+The local `db:setup` helper has 12 passing tests in `tests/database-setup.test.ts`, covering account/password setup, secret preservation, rejected configuration, error redaction, and recovery when configuration writes fail. These tests use fake database connections and temporary configuration files; they do not read the user's `.env` or connect to the native database. The native MariaDB administrator login remains a private setup step. Run `npm.cmd test -- tests/database-setup.test.ts` to repeat this isolated coverage.
+
+Separate disposable MariaDB 11.4.8 fixtures on loopback port 3308 also passed the helper and interactive CLI checks: repair of an existing account, login with the saved generated password, preservation of existing rows, denial of access to a similarly named sibling database, key replacement with no mailbox ciphertext, and key preservation when ciphertext exists. The fixture schemas/accounts were removed and the temporary server was stopped. The native service on port 3306 and the user's `.env` were not changed by these checks. The server TypeScript check passed after the helper changes.
+
+After adding direct Inbox mail, the full isolated suite passed **100 tests across 7 files**, including 40 engine integration tests. Coverage includes compose and reply without a contact, replies despite an old incorrect contact link, immutable recipients, contactless message threads and reply ingestion, suppression/revocation at enqueue and send time, safe retries, permissions/CSRF, and unchanged campaign consent gates. Manual Inbox messages do not create contacts or upgrade consent. All SMTP submissions used fake transports. The production build and both TypeScript checks passed.
+
+The expanded browser walkthrough passed **11 checks**, including direct compose to a new address, a reply without contact matching, and the compose modal at 390px width. Desktop Inbox and mobile composer screenshots were visually reviewed. The browser fixture kept sending disabled, started no worker, and confirmed zero send attempts. These checks used separate loopback test schemas; the real CRM database and mailbox were not changed. No database migration was needed for the Inbox changes.
+
+After adding configurable API origins, the full isolated suite passed **113 tests across 8 files** and the production build/typecheck passed. The 12 origin tests cover exact-origin configuration, wildcard CORS without credential sharing, malformed origins, preflight handling, and continued session/CSRF enforcement without database access. The database-backed API check also verifies the actual middleware mount and scheduler exclusion. Tests used fake mail transports and the separate loopback MariaDB on port 3308, which was stopped afterward. No real mail was submitted. The local environment was then set to `ALLOWED_ORIGINS=*` and `LIVE_SEND_ENABLED=true` as requested; existing app/worker processes need a restart to load those values. Dashboard pauses and delivery gates remain in effect.
+
+## Reproduce the isolated browser check
+
+`tests/browser-check.mjs` starts the built app on loopback port 3100, creates generated fixtures in a local database ending `_ui_test`, forces `LIVE_SEND_ENABLED=false`, and keeps automation paused. It never connects a real mailbox or launches a worker. It requires a loopback DB host and a user allowed to create that disposable schema; never use a real CRM schema or a credential intended for production. It generates a private random test owner/password internally rather than printing credentials.
+
+With the test DB credentials configured privately in a dedicated shell:
+
+```powershell
+npm run build
+$env:DB_HOST = '127.0.0.1'
+$env:DB_NAME = 'email_crm_ui_test'
+# Optional when Chrome is not in its default Windows installation path:
+# $env:CHROME_PATH = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+npm run test:browser
+```
+
+Use Node 24 or Node 22.12+ on PATH for both the build and browser command. Set `DB_PORT` to the actual local database port and `DB_USER`/`DB_PASSWORD` privately; the script creates/migrates only the guarded local test schema and leaves generated fixtures for inspection. Ensure port 3100 is available. `CHROME_PATH` can also select a locally installed compatible Chromium executable on another OS. Screenshots are written under `artifacts/`; inspect them with the check output. Restore normal local DB environment variables after the test, and remove the disposable schema only after reviewing its contents.
+
+## Acceptance matrix
+
+The items below are requirements for review, not a statement that every scenario has already run. Mark source coverage, automated execution, database integration, and manual/provider verification separately.
+
+- [ ] Authentication: correct/incorrect owner login, modern password hash, expiry/logout, login throttling, no public signup, session cookie flags.
+- [ ] Permissions: owner vs team settings/contact/campaign/inbox/system writes; read access; forbidden writes rejected server-side. Every dashboard mutation rejects missing session or CSRF.
+- [ ] Secrets: encrypted credentials in SQL, omitted from every API response and log; blank update preserves secret; connection errors redact sensitive values.
+- [ ] Connections: public pinned destination validation, blocked private IPv4/IPv6/metadata targets, approved ports, invalid certificates rejected; tests do not send mail.
+- [ ] CSV: bounded/invalid input, escaped quoted cells/newlines, column mapping, normalization, duplicate detection including same-file/concurrent import, immutable confirmation, error CSV, formula-safe export.
+- [ ] Consent: unknown/revoked/evidence-free records excluded; publicly listed addresses/imports are not permission; suppression survives editing/reimport and mailbox replacement.
+- [ ] Personalization: known/custom field and fallback rendering; missing/unknown required placeholders block sending; no unresolved tokens submitted.
+- [ ] Versions: published snapshots survive template/draft edits; explicit revisions change unsent work only and preserve accepted content/history.
+- [ ] Queue concurrency: simultaneous workers cannot claim/send one job twice; enrollment-step uniqueness holds; lease expiry recovers abandoned safe work.
+- [ ] Capacity: atomic rolling-cap reservation across simultaneous campaign/test/reply submissions; min interval/window/weekday/timezone; external-mail allowance caveat.
+- [ ] Outcomes: SMTP accepted vs temporary/permanent/auth/provider-limit/unknown; bounded safe backoff; no automatic retry of unknown or submitted work after crash.
+- [ ] Replies: In-Reply-To/References Message-ID matching, no subject-only matching, agency-wide cancellation, automatic/uncertain review pause, permanent-bounce suppression.
+- [ ] IMAP: durable UID/UIDVALIDITY checkpoint, duplicates no-op, stale sync stops follow-ups, resume/restart from safe checkpoint.
+- [ ] Unsubscribe: GET has no state change; confirmation/one-click POST suppress immediately without login; repeated requests idempotent; jobs canceled; no link rewriting as click.
+- [ ] Tracking: opaque tokens, stored safe redirect destinations, unsafe schemes rejected, no arbitrary query redirect, raw/unique/bot-filter behavior, campaign tracking disable.
+- [ ] Mailbox migration: old enrollments/conversations keep original sender, new default affects new campaigns, old mailbox still syncs.
+- [ ] Recovery: restart during claim/before submit/after submit; ambiguous SMTP held; operator reconciliation audited and follow-ups scheduled only once.
+- [ ] Scheduling: America/Los_Angeles DST spring gap/fall repeated hour, UTC persistence, minute/day boundaries, delay based on actual acceptance.
+- [ ] Analytics: tests excluded from production counts, distinct message opens/clicks, automated replies separate, denominators coherent with filters.
+- [ ] UI: persisted actions across refresh/restart, empty/loading/error/success states, table paging/sorting, import errors, keyboard access, responsive tablet and desktop, no fake chart data.
+
+## Controlled manual checklist
+
+The first part is local and sends nothing:
+
+1. Start with a fresh supported database, migrate/bootstrap, and log in. Set the business profile, timezone and initial mailbox defaults. Keep mailbox inactive and sending disabled/paused.
+2. Create a controlled contact with unknown consent. Refresh and restart; confirm persistence. Add note/task/deal and update pipeline/owner. Create a permission-limited user and verify rejected changes.
+3. Import a CSV containing a valid controlled address, malformed address, duplicate and already-suppressed address. Map columns, preview, confirm, download error CSV, and repeat. Verify suppression persists and no enrollment/job appears automatically.
+4. Build a draft with a missing merge field; confirm preview/launch explanations. Add a fallback and publish; edit the template and verify the approved version stays unchanged.
+5. Run the worker with `LIVE_SEND_ENABLED=false`. Verify work remains safely held and health shows actual state. Validate the scheduler without browser access and verify restart recovery.
+
+**Only after explicit authorization for sending**, use addresses you control (or documented opted-in recipients), one mailbox, a tiny sample, and the 20 cap:
+
+1. Privately enter valid mailbox credentials. Validate connections and sync first. Record the actual provider limit and space used. Use a receiving mailbox you own, clearly mark the test, and record its consent/source evidence.
+2. Enable the environment gate deliberately and unpause only the intended scope. Send a single test from the composer; confirm it consumes capacity and is excluded from campaign metrics. Inspect the received raw Message-ID, opt-out mechanism, plaintext/HTML rendering and sender association.
+3. Launch a tiny controlled campaign. Confirm SMTP acceptance/time and one job for its next step. Reply from the controlled recipient; sync and verify human classification, conversation association, agency-wide cancellation and human-reply count.
+4. Use controlled automatic reply and DSN fixtures (or the automated fake tests); confirm review hold, no human metric inflation, and permanent-bounce suppression without intentionally emailing nonexistent third-party addresses.
+5. In a controlled received message, open the opt-out link and verify GET alone changes nothing. Confirm via POST, then verify suppression and canceled work. Reimport the same address and attempt enrollment; it must remain excluded.
+6. With tracking enabled for the controlled campaign, inspect a token link and its stored destination. Disable tracking on another draft and verify no pixel/link instrumentation. Explain approximate metrics to the operator.
+7. Simulate uncertain acceptance with the fake transport, not a real duplicate email. Confirm no automatic resend and audit owner reconciliation. Do not deliberately generate uncertain live SMTP outcomes.
+8. Add a second authorized mailbox, validate it, and make it default. Verify a new draft selects it while the original conversation retains the old sender. Restore both gates to a paused/disabled state after testing unless ongoing operation is explicitly authorized.
+
+Before production release also complete the [Hostinger evidence record](hostinger.md) and an isolated [restore rehearsal](operations.md). Keep sanitized screenshots/evidence privately; do not collect passwords, tokens, raw personal inbox contents or secret-bearing logs.

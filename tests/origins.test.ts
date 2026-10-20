@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import express from 'express';
 import request from 'supertest';
+import { Router } from '../server/http.js';
+import { httpFixture } from './http-fixture.js';
 
 // This suite exercises middleware only. It cannot load .env or contact a database.
 vi.mock('dotenv/config', () => ({}));
@@ -38,21 +39,17 @@ afterEach(() => {
 });
 
 function fixture(authenticated = true) {
-  const app = express(), sessions = vi.fn();
-  app.use('/api', apiCors);
-  app.use('/api', (req, _res, next) => {
+  const router = Router(), sessions = vi.fn();
+  const app = httpFixture({beforeBody:[apiCors],middleware:[(req, _res, next) => {
     sessions();
     if (authenticated) {
       req.user = { id: 'origin-test-user', name: 'Origin Test', email: 'owner@example.test', role: 'owner', permissions: [] };
       req.session = { id: 'origin-test-session', csrf_token: csrfToken };
     }
     next();
-  });
-  app.use('/api', express.json(), csrfProtect);
-  app.get('/api/resource', requireUser, (_req, res) => res.json({ ok: true }));
-  app.post('/api/resource', requireUser, (_req, res) => res.json({ ok: true }));
-  app.options('/api/resource', (_req, res) => res.status(200).json({ reachedApplication: true }));
-  app.use((error: any, _req: any, res: any, _next: any) => res.status(error.status || 500).json({ error: error.message }));
+  },csrfProtect],mounts:[[router]],fallback:(req,res,next)=>{if(req.method==='OPTIONS')res.status(200).json({reachedApplication:true});else next();}});
+  router.get('/api/resource', requireUser, (_req, res) => res.json({ ok: true }));
+  router.post('/api/resource', requireUser, (_req, res) => res.json({ ok: true }));
   return { app, sessions };
 }
 

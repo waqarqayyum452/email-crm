@@ -1,6 +1,6 @@
 # San Diego Website Experts · Email CRM
 
-A single-agency React/TypeScript dashboard, Express API, and MySQL-backed email workflow. The application is local only until deployment is explicitly authorized. No public signup, Redis, external analytics, SaaS billing, paid AI dependency, live-mail test suite, or automatic hosting changes.
+A single-agency Next.js App Router application with React 19/TypeScript, Node Route Handlers, and MySQL-backed email workflows. The application is local only until deployment is explicitly authorized. No public signup, Redis, external analytics, SaaS billing, paid AI dependency, live-mail test suite, or automatic hosting changes.
 
 Initial identity: **San Diego Website Experts**, `sandiegowebsiteexperts.com`, mailbox `info@sandiegowebsiteexperts.com`; the planned production origin is `https://crm.sandiegowebsiteexperts.com`.
 
@@ -36,12 +36,16 @@ npm run dev
 
 For a local MariaDB compatibility target instead, set `DB_PORT=3307` in `.env`, then run `docker compose --profile hostinger-compat up -d mariadb` before migration. It uses a separate MariaDB 11.4 container/volume. If using an existing supported server, skip Docker and configure its database/user first. The bootstrap command uses `OWNER_EMAIL`, `OWNER_NAME`, and an interactive private password prompt (or `OWNER_PASSWORD` supplied privately by the environment). There is no public registration endpoint. Remove bootstrap-only passwords from the environment after use.
 
-Open `http://localhost:5173`. The API runs on port 3000; Vite proxies API requests during development. `APP_URL=http://localhost:5173` is the dashboard/link origin during development. Set `APP_URL=http://localhost:3000` before testing the built single-origin server:
+Open `http://localhost:3000`. Next.js serves the dashboard and API together; use `APP_URL=http://localhost:3000` locally. Dashboard routes are real URLs such as `/overview`, `/prospects` and `/prospects/<id>`, with direct links and refresh support. `npm run dev` runs Next.js with webpack. Build and start in a production environment configured with the actual HTTPS `APP_URL` and private secrets:
 
 ```powershell
 npm run build
 npm start
 ```
+
+`npm run build` runs TypeScript checks, builds Next.js into `.next`, then compiles the server/CLI tools into `dist` through `build:tools`. `npm start` runs `next start`; no custom HTTP server entry is required. Existing database tables, mailbox ciphertext, jobs and records are retained by this framework migration; it requires no new data migration. See [progress](docs/progress.md) for the validation status of the Next.js build.
+
+Use `npm run dev` for ordinary local HTTP use. Production startup uses Secure cookies and requires an HTTPS dashboard URL. The isolated browser check provides a separate HTTP test environment without touching real CRM credentials or enabling mail.
 
 `ALLOWED_ORIGINS` controls API CORS. Leave it blank to allow the `APP_URL` origin, add comma-separated exact canonical HTTP(S) origins to trust additional origins, or use `*` to accept any valid HTTP(S) API origin. `APP_URL` remains the actual dashboard/link URL. CORS sends no `Access-Control-Allow-Credentials`; sessions remain same-origin and CSRF/permissions still apply, so wildcard access does not enable a separately hosted authenticated dashboard. Restart the app after changing these variables.
 

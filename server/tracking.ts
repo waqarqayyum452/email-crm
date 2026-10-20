@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { Router, urlencoded, type Request } from 'express';
+import { Router, type Request } from './http.js';
 import { db, type Database } from './db.js';
 import { config } from './config.js';
 import { id, HttpError } from './lib/util.js';
@@ -34,7 +34,6 @@ export async function prepareMarketing(message: any, options: {open_tracking?:bo
 function validToken(value:unknown): value is string { return typeof value==='string'&&/^[a-f0-9]{64}$/.test(value); }
 async function event(req:Request,row:any,kind:'open'|'click',linkId?:string){await db('tracking_events').insert({id:id(),message_id:row.message_id,campaign_id:row.campaign_id,contact_id:row.contact_id||null,kind,link_id:linkId||null,bot:botLike(req.get('user-agent')||''),created_at:new Date()});}
 export const publicRouter=Router();
-publicRouter.use(urlencoded({extended:false,limit:'2kb'}));
 publicRouter.get('/t/open/:token.gif',async(req,res)=>{
   res.set({'Cache-Control':'no-store, no-cache, must-revalidate','Pragma':'no-cache','Content-Type':'image/gif'});
   const value=req.params.token;

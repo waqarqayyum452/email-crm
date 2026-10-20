@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
-import express from 'express';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
+import { httpFixture } from './http-fixture.js';
 
 const fake=vi.hoisted(()=>({sendMail:vi.fn(),syncMailbox:vi.fn(),beforeTransport:vi.fn()}));
 vi.mock('../server/engine/mail.js',async importOriginal=>{
@@ -22,7 +22,7 @@ const enabled=process.env.RUN_DB_TESTS==='true'&&Boolean(process.env.DB_NAME?.en
 const tables=['audit_logs','tracking_events','tracked_links','tracking_tokens','mailbox_checkpoints','messages','send_attempt_events','send_attempts','jobs','enrollments','sequence_steps','campaign_versions','campaigns','templates','import_results','imports','suppressions','tasks','notes','deals','contact_consents','contacts','email_accounts','sessions','users'];
 const uuid=()=>randomUUID(),date=()=>new Date();
 let actor:any,account:any,contact:any;
-const app=express();app.use(express.json());app.use((req,_res,next)=>{req.user=actor;next();});app.use(publicRouter);app.use('/api/campaigns',campaignRouter);app.use('/api/inbox',inboxRouter);app.use((error:any,_req:any,res:any,_next:any)=>res.status(error.status||400).json({error:error.message}));
+const app=httpFixture({middleware:[(req,_res,next)=>{req.user=actor;next();}],mounts:[[publicRouter],[campaignRouter,'/api/campaigns'],[inboxRouter,'/api/inbox']]});
 
 async function insertAccount(extra:any={}){
   const row={id:uuid(),label:'Controlled test',email:`mailbox-${uuid()}@example.com`,sender_name:'Test',smtp_host:'smtp.example.com',smtp_port:465,smtp_security:'tls',smtp_username:'test',smtp_secret:'never-used-by-fake',imap_host:'imap.example.com',imap_port:993,imap_security:'tls',imap_username:'test',imap_secret:'never-used-by-fake',status:'active',provider_policy:'opt_in_only',is_default:true,verified_at:date(),last_sync_at:date(),created_at:date(),updated_at:date(),...extra};await db('email_accounts').insert(row);return row;

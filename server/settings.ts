@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router } from './http.js';
 import { z } from 'zod';
 import nodemailer from 'nodemailer';
 import { ImapFlow } from 'imapflow';

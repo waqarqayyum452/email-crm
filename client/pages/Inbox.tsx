@@ -1,3 +1,6 @@
+'use client';
+
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { CheckCircle2, Mail, MessageCircle, PenSquare, RefreshCw, Search, Send, ShieldCheck } from 'lucide-react';
 import { body, date, initials, list, patch, useResource, type Row } from '../api';
@@ -9,23 +12,17 @@ const readyMailbox = (account: Row) => account.status === 'active' && Boolean(ac
 const participant = (message: Row) => String(message.direction === 'outbound' ? message.to_email || '' : message.from_email || '').trim().toLowerCase();
 const messageStatus = (message: Row) => message.classification && !['unmatched', 'outbound'].includes(message.classification) ? message.classification : message.direction === 'outbound' ? 'outgoing' : 'incoming';
 
-export function InboxPage() {
+export function InboxPage({ messageId = '' }: { messageId?: string }) {
   const { revision, accounts, can, act } = useWorkspace();
   const [classification, setClassification] = useState('');
   const [account, setAccount] = useState('');
   const [search, setSearch] = useState('');
-  const [selected, setSelected] = useState(location.hash.split('/')[1] || '');
+  const selected = messageId;
   const [busy, setBusy] = useState(false);
   const [composing, setComposing] = useState(false);
   const query = new URLSearchParams({ ...(classification ? { classification } : {}), ...(account ? { account_id: account } : {}) });
   const resource = useResource(`/inbox?${query}`, revision);
   const rows = list(resource.data).filter(m => `${m.from_email} ${m.subject} ${m.to_email}`.toLowerCase().includes(search.toLowerCase()));
-
-  useEffect(() => {
-    const hash = () => setSelected(location.hash.split('/')[1] || '');
-    window.addEventListener('hashchange', hash);
-    return () => window.removeEventListener('hashchange', hash);
-  }, []);
 
   return <>
     <PageHeader eyebrow="THE CONVERSATION CONTINUES" title="Inbox" description="Read, reply, and start a new conversation." actions={<>
@@ -49,10 +46,10 @@ export function InboxPage() {
         </div>
       </div>
       <div className="inbox-layout">
-        <aside className="conversation-list"><Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => <button className={`conversation-item ${selected === m.id ? 'active' : ''}`} key={m.id} onClick={() => { setSelected(m.id); location.hash = `inbox/${m.id}`; }}>
+        <aside className="conversation-list"><Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => <Link className={`conversation-item ${selected === m.id ? 'active' : ''}`} key={m.id} href={`/inbox/${m.id}`} scroll={false} aria-current={selected === m.id ? 'page' : undefined}>
           <div className="conversation-top"><span className="avatar contact-avatar">{initials(participant(m) || 'Mail')}</span><strong>{m.direction === 'outbound' ? m.to_email : m.from_name || m.from_email || 'Message'}</strong><time>{date(m.received_at || m.created_at, true)}</time></div>
           <h3>{m.subject || '(No subject)'}</h3><p>{m.body_text?.slice(0, 100) || 'Open to read this message.'}</p><Status value={messageStatus(m)} />
-        </button>) : <Empty title="A little quiet, for now." description="Synced messages and your conversations will appear here." />}</Resource></aside>
+        </Link>) : <Empty title="A little quiet, for now." description="Synced messages and your conversations will appear here." />}</Resource></aside>
         <section className="conversation-detail">{selected ? <Conversation key={selected} id={selected} /> : <div className="inbox-welcome">
           <div className="inbox-welcome-art"><MessageCircle size={36} /><Mail size={23} /></div><h2>Good conversations live here.</h2><p>Select a message to read and reply, or choose New message to start a conversation.</p><div><ShieldCheck size={16} />Human replies stop automated follow-ups.</div>
         </div>}</section>
@@ -79,7 +76,7 @@ function NewMessage({ selectedAccount, onClose }: { selectedAccount: string; onC
   }, [account, preferredAccount?.id, accounts]);
 
   return <Modal title="New message" description="Choose your mailbox and write directly to an email address." onClose={() => { if (!busy) onClose(); }} wide>
-    {!mailboxes.length ? <Empty title="Connect a sending mailbox" description={can('settings:write') ? 'Add a mailbox, validate its connection, and set its status to Active before writing a message.' : 'Ask your workspace owner to connect, validate, and activate a sending mailbox.'} action={<a className="button secondary" href="#settings/accounts" onClick={onClose}>Open mailbox settings</a>} /> : <form className="inbox-new-message" onSubmit={async e => {
+    {!mailboxes.length ? <Empty title="Connect a sending mailbox" description={can('settings:write') ? 'Add a mailbox, validate its connection, and set its status to Active before writing a message.' : 'Ask your workspace owner to connect, validate, and activate a sending mailbox.'} action={<Link className="button secondary" href="/settings/accounts" onClick={onClose}>Open mailbox settings</Link>} /> : <form className="inbox-new-message" onSubmit={async e => {
       e.preventDefault();
       if (!selectedMailbox || !validEmail(to.trim())) return;
       setBusy(true); setError('');

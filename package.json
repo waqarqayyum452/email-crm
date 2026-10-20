@@ -4,13 +4,13 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.12.0 <25"
+    "node": "^22.12.0 || ^24.0.0"
   },
   "scripts": {
-    "dev": "concurrently -k \"tsx watch server/index.ts\" \"vite --host localhost\"",
-    "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "dev": "next dev --webpack --hostname localhost",
+    "build": "npm run typecheck && next build --webpack && npm run build:tools",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
-    "start": "node dist/server/index.js",
+    "start": "next start",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:setup": "tsx scripts/setup-database.ts",
     "db:rollback": "tsx scripts/migrate.ts rollback",
@@ -19,14 +19,13 @@
     "doctor": "tsx scripts/doctor.ts",
     "test": "vitest run",
     "test:integration": "vitest run integration",
-    "test:browser": "node tests/browser-check.mjs"
+    "test:browser": "node tests/browser-check.mjs",
+    "build:tools": "tsc -p tsconfig.server.json"
   },
   "dependencies": {
     "cookie": "^1.0.2",
     "csv-parse": "^7.0.3",
     "dotenv": "^16.5.0",
-    "express": "^5.1.0",
-    "helmet": "^8.1.0",
     "imapflow": "^1.0.195",
     "ipaddr.js": "^2.2.0",
     "knex": "^3.1.0",
@@ -34,6 +33,7 @@
     "luxon": "^3.6.1",
     "mailparser": "^3.7.3",
     "mysql2": "^3.14.0",
+    "next": "16.4.2",
     "nodemailer": "^10.1.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -42,7 +42,6 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
-    "@types/express": "^5.0.1",
     "@types/luxon": "^3.6.2",
     "@types/mailparser": "^3.4.6",
     "@types/node": "^22.15.0",
@@ -51,12 +50,9 @@
     "@types/react-dom": "^19.0.4",
     "@types/sanitize-html": "^2.15.0",
     "@types/supertest": "^6.0.2",
-    "@vitejs/plugin-react": "^4.4.1",
-    "concurrently": "^9.1.2",
     "supertest": "^7.1.1",
     "tsx": "^4.19.3",
     "typescript": "^5.8.3",
-    "vite": "^6.3.4",
-    "vitest": "^3.1.2"
+    "vitest": "^5.0.5"
   }
 }

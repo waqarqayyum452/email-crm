@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router } from './http.js';
 import { z } from 'zod';
 import { db, json, type Database } from './db.js';
 import { requireUser, permit } from './auth.js';

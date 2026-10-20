@@ -1,3 +1,6 @@
+'use client';
+
+import Link from 'next/link';
 import { Children, cloneElement, isValidElement, useEffect, useId, useRef, type ReactElement, type ReactNode } from 'react';
 import { AlertCircle, ArrowRight, Check, ChevronRight, Inbox, LoaderCircle, X } from 'lucide-react';
 import { date, type Row } from './api';
@@ -50,5 +53,5 @@ export function SaveFooter({ busy, label = 'Save changes', onCancel }: { busy?: 
 export function Timeline({ items }: { items: Row[] }) {
   return items.length ? <div className="timeline">{items.map((item, i) => <div className="timeline-item" key={item.id || i}><span className="timeline-dot" /><div><strong>{String(item.description || item.action || item.type || item.subject || 'Activity').replace(/[._]/g, ' ')}</strong>{(item.email || item.detail || item.entity_type) && <p>{String(item.email || item.detail || item.entity_type).replace(/_/g, ' ')}</p>}<small>{date(item.created_at || item.at, true)}</small></div></div>)}</div> : <Empty title="A fresh start" description="New messages and contact updates will appear in your activity timeline." />;
 }
-export function LinkArrow({ href, children }: { href: string; children: ReactNode }) { return <a className="text-link" href={href}>{children}<ChevronRight size={15} /></a>; }
+export function LinkArrow({ href, children }: { href: string; children: ReactNode }) { return <Link className="text-link" href={href}>{children}<ChevronRight size={15} /></Link>; }
 export function HtmlPreview({ html, text }: { html?: string; text?: string }) { return html ? <iframe className="email-preview" title="Email preview" sandbox="" referrerPolicy="no-referrer" srcDoc={`<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:;"><style>body{font:14px/1.65 system-ui;color:#293544;padding:20px;overflow-wrap:anywhere}a{color:#366b73}</style>${html}`} /> : <div className="plain-preview">{text || 'No message content.'}</div>; }

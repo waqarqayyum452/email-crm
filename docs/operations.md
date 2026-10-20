@@ -50,7 +50,7 @@ Migration rollback can drop records and is not a restore strategy. `npm run db:r
 
 | Symptom | Checks and safe action |
 | --- | --- |
-| API 503 / cannot start | Confirm Node 24 or Node 22.12+, install/build success, root working directory, `dist/server/index.js`, assigned port, and sanitized server error code. Node 22.11 is too old for patched dependencies. This must be a server/Express Web App. |
+| API 503 / cannot start | Confirm Node 24, successful Next.js build, project-root working directory, `.next` output, `npm start` (`next start`), assigned port and sanitized server error code. Use the Next.js hosting framework/default entry; remove an old custom HTTP-server entry override. |
 | Database access denied | Check actual hPanel host/user/name, user grants, environment availability and strict TLS trust. Do not print passwords or full connection URLs. Restart after variable changes. |
 | Unsupported version / SQL error | Capture only version and sanitized code. Run migrations against disposable MySQL 8+/MariaDB 10.11+; verify `SKIP LOCKED`, JSON reads/writes and queue engine. Older MariaDB is not claimed supported. |
 | Tables missing | Run `npm run db:migrate` against the intended database; verify migration history. Never use schema reset against real data. |

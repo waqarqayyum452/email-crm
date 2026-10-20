@@ -1,4 +1,4 @@
-import { Router, type Request, type Response, type NextFunction } from 'express';
+import { Router, type Request, type Response } from './http.js';
 import { randomBytes } from 'node:crypto';
 import { parse, serialize } from 'cookie';
 import { z } from 'zod';
@@ -9,7 +9,7 @@ import { HttpError, id, sha256, audit, normalizeEmail } from './lib/util.js';
 import { isAllowedOrigin } from './lib/origins.js';
 
 export type AuthUser = { id:string; name:string; email:string; role:string; permissions:string[] };
-declare global { namespace Express { interface Request { user?:AuthUser; session?:{id:string;csrf_token:string}; } } }
+type NextFunction = (error?: unknown) => void;
 const COOKIE = 'sdwe_session', CSRF = 'sdwe_csrf';
 let passwordWork=0;
 async function passwordCheck(work:()=>Promise<boolean>) { if(passwordWork>=2)throw new HttpError(429,'Sign-in is busy. Please try again shortly.');passwordWork++;try{return await work();}finally{passwordWork--;} }

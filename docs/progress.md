@@ -4,6 +4,8 @@ This record distinguishes implemented source, executed local checks, and private
 
 ## Phases
 
+The phase evidence and completed test counts below describe the implementation before its Next.js migration. The domain behavior and data remain in place; earlier passes do not establish that the new HTTP runtime is verified.
+
 | Phase | Source status | Executed evidence / boundary |
 | --- | --- | --- |
 | 1 | Implemented: schema, owner login, encrypted mailbox settings, connection validation, manual contact | Migration CLI and MariaDB API tests passed; browser login/contact persistence passed. Mailbox authentication is mocked, not verified with real credentials. |
@@ -30,7 +32,7 @@ Validation used an isolated **Node 24.22.0** runtime and **MariaDB 11.4.8** boun
 | Backup/restore rehearsal | MariaDB dump restored to an isolated schema; 29 tables and 54 rows were compared, with all row values equal. This was a fixture restore, not recovery of a live-mail incident. |
 | Screenshots | `artifacts/crm-overview.png`, `artifacts/crm-prospects.png`, `artifacts/crm-mobile.png` were generated and visually reviewed. |
 
-## Required release checks
+## Earlier release checks
 
 - [x] Dependency installation and lockfile verified; production dependency audit had 0 reported advisories.
 - [x] TypeScript checks and production build pass.
@@ -68,6 +70,19 @@ The full isolated MariaDB 11.4.8 suite passed **100 tests across 7 files**, incl
 `ALLOWED_ORIGINS` supports the default APP_URL origin, additional exact HTTP(S) origins, or `*`. API preflights run before session/database work. Wildcard responses omit credential sharing; cookie sessions, CSRF tokens, permissions and scheduler authentication remain enforced. The local environment was updated to `ALLOWED_ORIGINS=*` and `LIVE_SEND_ENABLED=true` at the user's request. Existing app/worker processes require a restart; dashboard pauses, mailbox validation, recent sync, sending windows, capacity and recipient eligibility still apply.
 
 The production build/typecheck and **113 tests across 8 files** passed, including 12 focused origin tests and the real-app CORS/session/CSRF/scheduler check. Tests used fake mail transports and a disposable MariaDB schema on loopback port 3308; that temporary server was stopped. No worker was run against the real CRM, no real email was submitted, and no Hostinger settings or deployment were changed.
+
+## Next.js runtime migration
+
+The current runtime uses Next.js 16.4.2 App Router, React 19/TypeScript, native dashboard URLs and Node Route Handlers. Next.js owns the development and production HTTP server; the domain routers now dispatch Web Requests through `server/http.ts`. The shared dashboard layout and components remain in `client/`. The Next.js proxy supplies CSP nonces and security headers; session, CSRF, API-origin and mail-safety rules remain enforced.
+
+The schema, Knex/mysql2 database layer, encrypted mailbox data, scheduled jobs and worker are retained. No new data migration is required. `npm run build` builds `.next` and the compiled CLI tools in `dist`; the bounded worker entry remains `dist/scripts/worker.js`.
+
+- [x] Next.js production build and both TypeScript checks pass; CLI tools compile into `dist`.
+- [x] All **122 tests across 9 files** pass on Vitest 5.0.5, including 49 database-backed API/engine checks and 9 new native HTTP boundary checks.
+- [x] All **14 browser checks** pass against actual `next start`, including direct URLs, contact persistence, compose/reply, CSP nonces, Secure/HttpOnly/SameSite cookies, CSV authorization, tracking and unsubscribe behavior, legacy bookmarks and mobile layouts.
+- [x] `npm install` / audit reports **0 vulnerabilities**, including development dependencies, after the patched test-runner upgrade.
+
+These checks used Node 24.22.0, the separate loopback MariaDB 11.4.8 on port 3308, fake transports, and private generated browser fixtures with live sending disabled and no worker. Desktop and mobile screenshots were inspected. The browser fixture exercises production HTTPS configuration and Secure cookies using Chromium's trustworthy loopback behavior; it does not prove a public TLS deployment. No real CRM data, mailbox credentials or encryption keys were changed. The local dashboard URL was moved from port 5173 to port 3000, retaining other environment settings. No deployment, DNS change or live-mail submission is part of the framework migration.
 
 ## Deliberately deferred
 

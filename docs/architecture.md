@@ -3,8 +3,11 @@
 ## Structure
 
 ```text
-client/                  React dashboard, shared components, authenticated API client
-server/app.ts            Express composition, CSRF/session boundaries, bounded scheduler endpoint
+app/                     Next.js App Router pages, persistent workspace layout, Node Route Handlers
+client/                  Shared React dashboard components, navigation, authenticated API client
+proxy.ts                 Next.js request nonce/CSP and security headers
+server/app.ts            Web Request dispatcher, session/CSRF boundaries, bounded scheduler endpoint
+server/http.ts           Framework-neutral routing and request/response helpers
 server/auth.ts           owner/team access, hashed sessions, password verification
 server/settings.ts       owner-editable business settings and encrypted mailbox configuration
 server/contacts.ts       contacts, pipeline, notes, tasks, deals, suppression management
@@ -21,7 +24,11 @@ docs/                    contracts, deployment, operations, verification status
 public/                  downloadable import template
 ```
 
-The browser calls a same-origin API. Express is the authority for authorization, CSRF, validation, and state transitions. MySQL holds all durable business state. Nodemailer submits SMTP messages; ImapFlow fetches incremental inbox messages; mailparser parses MIME. There is no Redis or external queue. Production builds serve the compiled frontend and API from one Node application; development uses Vite plus the API.
+Next.js 16.4.2 App Router owns the HTTP server and serves React 19 pages and the same-origin API. Native page routes such as `/overview`, `/prospects/[id]`, `/campaigns/[id]` and `/inbox/[id]` reuse the domain components in `client/`; the workspace layout preserves the dashboard shell during navigation. `server/app.ts` dispatches Web Requests to the framework-neutral domain routers in `server/http.ts`, which enforce authorization, CSRF, validation and state transitions. Its `createApp` Node adapter is for fixtures, not the production server.
+
+Node Route Handlers expose `/api/[[...path]]`, `/healthz`, `/internal/tick`, `/t/[kind]/[token]` and `/unsubscribe/[token]`. The Next.js proxy applies request-specific CSP nonces and security headers. Same-origin sessions, CSRF, permissions and configurable API-origin behavior remain in force.
+
+MySQL holds all durable business state. Nodemailer submits SMTP messages; ImapFlow fetches incremental inbox messages; mailparser parses MIME. There is no Redis or external queue. The database schema, Knex/mysql2 layer, credential encryption and mail worker are unchanged by the Next.js migration, so no data migration is required. Development runs `next dev --webpack` on port 3000. Production runs `next start` after `npm run build`; `.next` contains the web build, while `dist/scripts/worker.js` and the other compiled CLI tools remain available for bounded private execution.
 
 One agency can have one owner and permission-scoped team users. There are no tenant IDs or billing paths. A future OAuth provider can implement the mailbox transport boundary; OAuth is not implemented. A mailbox is a durable sender identity: changing the default applies to new campaigns only, and does not rewrite existing thread/enrollment associations.
 

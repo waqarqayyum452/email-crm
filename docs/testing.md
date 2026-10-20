@@ -22,7 +22,15 @@ Remove-Item Env:RUN_DB_TESTS
 
 Create/grant that separate database first; do not point the test variable at production. Restore `DB_NAME` to the normal local database before running the app. Integration files run sequentially because they share and reset fixture state. Verify MySQL 8 and the actual Hostinger MariaDB build independently; do not treat one engine's pass as proof for the other. The doctor only checks basic queue SQL and locks; it does not run the concurrency suite or prove scheduler cadence.
 
-## Executed local evidence
+## Next.js migration evidence
+
+The production Next.js 16.4.2 build and both TypeScript checks pass. The isolated suite passes **122 tests across 9 files** with Vitest 5.0.5, including real MariaDB API/engine tests and native HTTP boundary tests. The dependency audit reports **0 vulnerabilities** across production and development dependencies.
+
+The actual `next start` walkthrough passes **14 checks**, including native page/deep-link navigation, contact persistence, campaign/template editing, normal Inbox compose/reply without contacts, authenticated CSV downloads, unique CSP script nonces, Secure/HttpOnly/SameSite session cookies, public tracking, unsubscribe confirmation/one-click handling, legacy bookmark conversion and mobile layouts. Screenshots were visually inspected. The browser fixture uses generated credentials, production configuration with an explicit loopback origin, a separate local `*_ui_test` database, disabled live sending and no worker. It does not read the user's private `.env`, send email or verify public hosting/TLS. See [progress.md](progress.md) for remaining Hostinger release checks.
+
+## Earlier implementation evidence
+
+The recorded passes in this section predate the Next.js migration. They document earlier domain/database behavior; the current runtime's results are recorded separately above and in [progress.md](progress.md).
 
 Node 24.22.0 and loopback MariaDB 11.4.8 were used for the passing production build/typecheck, migration CLI, database-backed API/engine checks, and browser walkthrough. All 60 tests passed across 6 files, including the SSRF destination checks. `npm audit --omit=dev` reported 0 production dependency advisories at verification time. Local doctor passed UTC/InnoDB/locking and certificate-verified SMTP/IMAP TLS 1.3 reachability without mailbox authentication or message submission. An isolated backup/restore compared 29 tables/54 fixture rows with identical values.
 
@@ -42,7 +50,7 @@ After adding configurable API origins, the full isolated suite passed **113 test
 
 ## Reproduce the isolated browser check
 
-`tests/browser-check.mjs` starts the built app on loopback port 3100, creates generated fixtures in a local database ending `_ui_test`, forces `LIVE_SEND_ENABLED=false`, and keeps automation paused. It never connects a real mailbox or launches a worker. It requires a loopback DB host and a user allowed to create that disposable schema; never use a real CRM schema or a credential intended for production. It generates a private random test owner/password internally rather than printing credentials.
+`tests/browser-check.mjs` starts the actual built Next.js application with `next start` on loopback port 3100, creates generated fixtures in a local database ending `_ui_test`, forces `LIVE_SEND_ENABLED=false`, and keeps automation paused. It exercises real page URLs and Route Handlers, not a separate fixture HTTP server. It never connects a real mailbox or launches a worker. It requires a loopback DB host and a user allowed to create that disposable schema; never use a real CRM schema or a credential intended for production. It generates a private random test owner/password internally rather than printing credentials.
 
 With the test DB credentials configured privately in a dedicated shell:
 
@@ -55,7 +63,7 @@ $env:DB_NAME = 'email_crm_ui_test'
 npm run test:browser
 ```
 
-Use Node 24 or Node 22.12+ on PATH for both the build and browser command. Set `DB_PORT` to the actual local database port and `DB_USER`/`DB_PASSWORD` privately; the script creates/migrates only the guarded local test schema and leaves generated fixtures for inspection. Ensure port 3100 is available. `CHROME_PATH` can also select a locally installed compatible Chromium executable on another OS. Screenshots are written under `artifacts/`; inspect them with the check output. Restore normal local DB environment variables after the test, and remove the disposable schema only after reviewing its contents.
+Use Node 24 or Node 22.12+ on PATH for both the build and browser command. `npm run build` must complete both the `.next` web build and `build:tools` before running the browser check. Set `DB_PORT` to the actual local database port and `DB_USER`/`DB_PASSWORD` privately; the script creates/migrates only the guarded local test schema and leaves generated fixtures for inspection. Ensure port 3100 is available. `CHROME_PATH` can also select a locally installed compatible Chromium executable on another OS. Screenshots are written under `artifacts/`; inspect them with the check output. Restore normal local DB environment variables after the test, and remove the disposable schema only after reviewing its contents.
 
 ## Acceptance matrix
 

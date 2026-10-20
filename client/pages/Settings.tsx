@@ -1,3 +1,6 @@
+'use client';
+
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { ArrowDown, ArrowUp, Building2, CheckCircle2, Clock3, Eye, Globe2, KeyRound, Mail, Plus, Save, Settings2, ShieldCheck, Users, X } from 'lucide-react';
 import { body, date, list, patch, type Row } from '../api';
@@ -5,10 +8,9 @@ import { useWorkspace } from '../context';
 import { Badge, Button, Detail, Empty, Field, FormError, Modal, PageHeader, Panel, SaveFooter, Status } from '../ui';
 
 const tabs = [{ key: 'business', label: 'Business profile', icon: Building2 }, { key: 'accounts', label: 'Mailboxes', icon: Mail }, { key: 'sending', label: 'Sending & automation', icon: Clock3 }, { key: 'tracking', label: 'Tracking & retention', icon: Eye }, { key: 'crm', label: 'CRM & pipeline', icon: Settings2 }, { key: 'team', label: 'Team & permissions', icon: Users }];
-export function SettingsPage() {
-  const [tab, setTab] = useState(location.hash.split('/')[1] || 'business'); const { can, settings } = useWorkspace();
-  useEffect(() => { const change = () => setTab(location.hash.split('/')[1] || 'business'); window.addEventListener('hashchange', change); return () => window.removeEventListener('hashchange', change); }, []);
-  return <><PageHeader eyebrow="MAKE IT YOURS" title="Settings" description="Your agency, your workflow, your pace." /><div className="settings-layout"><nav className="settings-nav" aria-label="Settings sections">{tabs.map(({ key, label, icon: Icon }) => <a key={key} href={`#settings/${key}`} className={tab === key ? 'active' : ''}><Icon size={17} />{label}</a>)}<div className="settings-security"><ShieldCheck size={20} /><strong>Security is always on.</strong><p>Permissions, encryption, suppression, and TLS stay enforced.</p></div></nav><div className="settings-main">{!can('settings:write') && <div className="info-banner"><ShieldCheck size={20} /><div><strong>You have read-only access to settings.</strong><p>Your workspace owner can grant permission to make changes.</p></div></div>}{tab === 'accounts' ? <Accounts /> : tab === 'team' ? <Team /> : tab === 'crm' ? <CRM /> : Object.keys(settings).length ? <SettingsForm key={tab} section={tab} /> : <Panel><Empty title="Settings are unavailable" description="Refresh the workspace after checking the API and database connection." /></Panel>}</div></div></>;
+export function SettingsPage({ section = 'business' }: { section?: string }) {
+  const tab = section; const { can, settings } = useWorkspace();
+  return <><PageHeader eyebrow="MAKE IT YOURS" title="Settings" description="Your agency, your workflow, your pace." /><div className="settings-layout"><nav className="settings-nav" aria-label="Settings sections">{tabs.map(({ key, label, icon: Icon }) => <Link key={key} href={`/settings/${key}`} className={tab === key ? 'active' : ''}><Icon size={17} />{label}</Link>)}<div className="settings-security"><ShieldCheck size={20} /><strong>Security is always on.</strong><p>Permissions, encryption, suppression, and TLS stay enforced.</p></div></nav><div className="settings-main">{!can('settings:write') && <div className="info-banner"><ShieldCheck size={20} /><div><strong>You have read-only access to settings.</strong><p>Your workspace owner can grant permission to make changes.</p></div></div>}{tab === 'accounts' ? <Accounts /> : tab === 'team' ? <Team /> : tab === 'crm' ? <CRM /> : Object.keys(settings).length ? <SettingsForm key={tab} section={tab} /> : <Panel><Empty title="Settings are unavailable" description="Refresh the workspace after checking the API and database connection." /></Panel>}</div></div></>;
 }
 
 function SettingsForm({ section }: { section: string }) {

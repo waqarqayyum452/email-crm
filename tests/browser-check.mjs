@@ -3,15 +3,23 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readdir } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
+import { createServer as createPortProbe } from 'node:net';
 import mysql from 'mysql2/promise';
 
 // Run only against an explicitly isolated local database. Never uses a mailbox connection.
 const database = process.env.DB_NAME || 'email_crm_ui_test';
 if (!/^[a-zA-Z0-9_]+_ui_test$/.test(database)) throw new Error('Browser checks require DB_NAME ending in _ui_test.');
 if (!['127.0.0.1', 'localhost', '::1'].includes(process.env.DB_HOST || '127.0.0.1')) throw new Error('Browser checks require a loopback database host.');
+// Exercise the production runtime and Secure cookies on trustworthy loopback.
+// APP_URL advertises HTTPS for production validation; this local-only fixture
+// explicitly allows its HTTP browser origin and never runs a mail worker.
 Object.assign(process.env, {
   DB_HOST: process.env.DB_HOST || '127.0.0.1', DB_PORT: process.env.DB_PORT || '3306', DB_USER: process.env.DB_USER || 'root', DB_PASSWORD: process.env.DB_PASSWORD || '',
-  DB_NAME: database, NODE_ENV: 'test', PORT: '3100', APP_URL: 'http://127.0.0.1:3100',
+  DB_NAME: database, NODE_ENV: 'production', PORT: '3100', APP_URL: 'https://127.0.0.1:3100', ALLOWED_ORIGINS: 'http://127.0.0.1:3100',
+  __NEXT_PROCESSED_ENV: 'true',
   LIVE_SEND_ENABLED: 'false', ENCRYPTION_KEY: randomBytes(32).toString('base64'), SCHEDULER_SECRET: randomBytes(32).toString('hex'),
 });
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -23,6 +31,48 @@ let server, browser, db, page;
 const failures = [];
 const checks = [];
 const apiTrail = [];
+let serverOutput = '';
+const startupDiagnostic = value => String(value)
+  .replace(/\b(password|secret|token|authorization)\s*[:=]\s*["']?[^\s,"'}]+/gi, '$1=[REDACTED]')
+  .replace(/Bearer\s+[^\s"']+/gi, 'Bearer [REDACTED]')
+  .replace(/[\r\n\t]+/g, ' ').slice(-1500);
+
+async function startNextServer() {
+  // Never mistake a preexisting app on this port for the isolated child server.
+  const probe = createPortProbe();
+  await new Promise((resolve, reject) => { probe.once('error', reject); probe.listen(3100, '127.0.0.1', resolve); });
+  await new Promise((resolve, reject) => { probe.close(error => error ? reject(error) : resolve()); });
+  const child = spawn(process.execPath, [path.join(projectRoot, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', '3100'], {
+    cwd: projectRoot, env: { ...process.env }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  server = child;
+  child.stdout.on('data', chunk => { serverOutput = (serverOutput + chunk).slice(-8000); });
+  child.stderr.on('data', chunk => { serverOutput = (serverOutput + chunk).slice(-8000); });
+  let startupError;
+  child.once('error', error => { startupError = error; });
+  const deadline = Date.now() + 30000;
+  let readiness = 'No readiness response received.';
+  while (Date.now() < deadline) {
+    if (startupError) throw startupError;
+    if (child.exitCode !== null) throw new Error(`Next server exited during startup (${child.exitCode}). ${startupDiagnostic(serverOutput)}`);
+    try {
+      const response = await fetch('http://127.0.0.1:3100/healthz', { signal: AbortSignal.timeout(2000) });
+      if (response.ok) return;
+      readiness = `HTTP ${response.status}: ${startupDiagnostic((await response.text()).slice(0, 1000))}`;
+    } catch (error) { readiness = startupDiagnostic(`${error.name}: ${error.message}${error.cause?.code ? ` (${error.cause.code})` : ''}`); }
+    await delay(150);
+  }
+  throw new Error(`Next server did not become ready within 30 seconds. Last readiness result: ${readiness}. ${startupDiagnostic(serverOutput)}`);
+}
+
+async function stopNextServer() {
+  if (!server || server.exitCode !== null) return;
+  const exited = once(server, 'exit');
+  server.kill();
+  if (await Promise.race([exited.then(() => true), delay(3000).then(() => false)])) return;
+  server.kill('SIGKILL');
+  await exited;
+}
 
 async function check(name, fn) { await fn(); checks.push(name); console.log(`PASS ${name}`); }
 async function mutate(page, method, apiPath, action) {
@@ -75,25 +125,83 @@ try {
     to_email: `normal-inbox-${runId}@example.test`, subject: `Contactless inbox QA ${runId}`, body_text: 'A normal email does not require a CRM contact.',
     classification: 'unmatched', is_test: false, received_at: now, created_at: now,
   });
-  const { createApp } = await import('../dist/server/app.js');
-  server = await new Promise((resolve, reject) => { const listening = createApp().listen(3100, '127.0.0.1', () => resolve(listening)); listening.once('error', reject); });
+  const publicMessageId = randomUUID(), publicRecipient = `optout-${runId}@example.test`;
+  const openToken = randomBytes(32).toString('hex'), unsubscribeToken = randomBytes(32).toString('hex'), clickToken = randomBytes(32).toString('hex');
+  await db('messages').insert({
+    id: publicMessageId, account_id: composeMailboxId, contact_id: null, direction: 'outbound',
+    message_id: `<public-routes-${runId}@example.test>`, references_json: '[]', from_email: `normal-inbox-${runId}@example.test`,
+    to_email: publicRecipient, subject: 'Public route fixture only', body_text: 'Never submitted to SMTP.', classification: 'outbound', is_test: false, received_at: now, created_at: now,
+  });
+  await db('tracking_tokens').insert([
+    { id: openToken, message_id: publicMessageId, contact_id: null, kind: 'tracking', created_at: now },
+    { id: unsubscribeToken, message_id: publicMessageId, contact_id: null, kind: 'unsubscribe', created_at: now },
+  ]);
+  await db('tracked_links').insert({ id: randomUUID(), token: clickToken, message_id: publicMessageId, url: 'https://example.test/review', created_at: now });
+  await startNextServer();
   browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
   page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
   page.on('pageerror', error => failures.push(error.message));
   page.on('response', response => { const pathname = new URL(response.url()).pathname; if (pathname.startsWith('/api/')) apiTrail.push(`${response.request().method()} ${pathname}: ${response.status()}`); });
-  await page.goto('http://127.0.0.1:3100', { waitUntil: 'networkidle' });
+  const initialDocument = await page.goto('http://127.0.0.1:3100', { waitUntil: 'networkidle' });
+  await check('Next pages use per-request CSP nonces and API/public routes preserve their response contracts', async () => {
+    const headers = initialDocument.headers(), csp = headers['content-security-policy'] || '', nonce = csp.match(/'nonce-([^']+)'/)?.[1];
+    expect(nonce, 'Next document CSP includes a script nonce').toBeTruthy();
+    expect(await page.locator('script').evaluateAll(scripts => scripts.map(script => script.nonce).filter(Boolean))).toContain(nonce);
+    expect(headers['x-content-type-options']).toBe('nosniff'); expect(headers['x-powered-by']).toBeUndefined();
+    const secondDocument = await page.request.get('http://127.0.0.1:3100/overview');
+    expect(secondDocument.headers()['content-security-policy']).toContain("'nonce-");
+    expect(secondDocument.headers()['content-security-policy']).not.toContain(`'nonce-${nonce}'`);
+    const session = await fetch('http://127.0.0.1:3100/api/auth/session');
+    expect(session.status).toBe(200); expect(session.headers.get('cache-control')).toContain('no-store');
+    expect((await fetch('http://127.0.0.1:3100/api/analytics/export.csv')).status).toBe(401);
+    expect((await fetch('http://127.0.0.1:3100/internal/tick', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status).toBe(401);
+    const template = await fetch('http://127.0.0.1:3100/import-template.csv');
+    expect(template.status).toBe(200); expect(await template.text()).toContain('email');
+  });
+  await check('Next public tracking and unsubscribe endpoints work without sign-in and preserve confirmation semantics', async () => {
+    const pixel = await fetch(`http://127.0.0.1:3100/t/open/${openToken}.gif`);
+    expect(pixel.status).toBe(200); expect(pixel.headers.get('content-type')).toContain('image/gif');
+    expect(Buffer.from(await pixel.arrayBuffer()).subarray(0, 3).toString()).toBe('GIF');
+    expect(await db('tracking_events').where({ message_id: publicMessageId, kind: 'open' })).toHaveLength(1);
+    const click = await fetch(`http://127.0.0.1:3100/t/click/${clickToken}?url=https://ignored.example.test`, { redirect: 'manual' });
+    expect(click.status).toBe(302); expect(click.headers.get('location')).toBe('https://example.test/review');
+    const url = `http://127.0.0.1:3100/unsubscribe/${unsubscribeToken}`;
+    const confirmation = await fetch(url); expect(confirmation.status).toBe(200); expect(await confirmation.text()).toContain('Confirm unsubscribe');
+    expect(await db('suppressions').where({ email: publicRecipient })).toHaveLength(0);
+    const result = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'List-Unsubscribe=One-Click' });
+    expect(result.status).toBe(200); expect(await result.json()).toEqual({ unsubscribed: true });
+    expect(await db('suppressions').where({ email: publicRecipient })).toHaveLength(1);
+    expect(await db('contacts').where({ email: publicRecipient })).toHaveLength(0);
+    expect(await db('send_attempts')).toHaveLength(0);
+  });
   await check('Owner signs in with session and CSRF', async () => {
     await page.getByLabel('Email address', { exact: true }).fill(ownerEmail);
     await page.getByLabel('Password', { exact: true }).fill(password);
     await mutate(page, 'POST', '/auth/login', () => page.getByRole('button', { name: 'Sign in to workspace' }).click());
+    const sessionCookie = (await page.context().cookies()).find(cookie => cookie.name === 'sdwe_session');
+    expect(sessionCookie, 'Production login creates a session cookie').toBeTruthy();
+    expect(sessionCookie.secure).toBe(true); expect(sessionCookie.httpOnly).toBe(true); expect(sessionCookie.sameSite).toBe('Strict');
     await expect(page.getByRole('heading', { name: 'Good to see you, Browser.' })).toBeVisible();
     await expect(page.getByText('Automation paused', { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Outreach performance', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Sending capacity', exact: true })).toBeVisible();
+    await expect(page.locator('.metrics-grid .metric-value')).toHaveCount(8);
+    await expect(page.locator('.loading')).toHaveCount(0);
     await page.screenshot({ path: path.join(artifacts, 'crm-overview.png'), fullPage: true });
     await noPageOverflow(page, 'Desktop overview');
   });
+  await check('Authenticated Next CSV downloads and legacy hash links preserve access and navigation', async () => {
+    const exported = await page.request.get('http://127.0.0.1:3100/api/analytics/export.csv');
+    expect(exported.status()).toBe(200); expect(exported.headers()['content-type']).toContain('text/csv');
+    expect(exported.headers()['content-disposition']).toContain('attachment; filename="analytics.csv"');
+    expect(await exported.text()).toContain('smtp_accepted_messages');
+    await page.goto('http://127.0.0.1:3100/#inbox', { waitUntil: 'networkidle' });
+    await page.waitForURL('http://127.0.0.1:3100/inbox');
+    await expect(page.getByRole('heading', { level: 1, name: 'Inbox', exact: true })).toBeVisible();
+  });
   let contactId;
   await check('Contact creation persists through page reload', async () => {
-    await page.goto('http://127.0.0.1:3100/#prospects');
+    await page.goto('http://127.0.0.1:3100/prospects');
     await page.getByRole('button', { name: 'Add prospect', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Add a prospect' });
     await dialog.getByLabel('First name').fill('Jamie');
@@ -111,7 +219,7 @@ try {
     await page.screenshot({ path: path.join(artifacts, 'crm-prospects.png'), fullPage: true });
   });
   await check('Contact edit, notes, tasks, and stage changes persist', async () => {
-    await page.goto(`http://127.0.0.1:3100/#prospects/${contactId}`);
+    await page.goto(`http://127.0.0.1:3100/prospects/${contactId}`);
     await page.getByRole('button', { name: 'Edit contact', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Edit contact' });
     await dialog.getByLabel('City', { exact: true }).fill('San Diego');
@@ -139,14 +247,14 @@ try {
     expect((await db('contacts').where({ id: contactId }).first()).city).toBe('San Diego');
   });
   await check('Owner business settings save', async () => {
-    await page.goto('http://127.0.0.1:3100/#settings/business');
+    await page.goto('http://127.0.0.1:3100/settings/business');
     await page.getByLabel('Business address', { exact: true }).fill('Browser QA · isolated local test database');
     await mutate(page, 'PATCH', '/settings', () => page.getByRole('button', { name: 'Save changes' }).click());
     await page.reload();
     await expect(page.getByLabel('Business address', { exact: true })).toHaveValue('Browser QA · isolated local test database');
   });
   await check('Templates save, duplicate, and preview with sample data', async () => {
-    await page.goto('http://127.0.0.1:3100/#templates');
+    await page.goto('http://127.0.0.1:3100/templates');
     await page.getByRole('button', { name: 'Create template', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Create a template' });
     await dialog.getByLabel('Template name', { exact: true }).fill(`Browser QA welcome ${runId}`);
@@ -160,7 +268,7 @@ try {
     await expect(page.getByRole('heading', { name: `Browser QA welcome ${runId} (copy)`, exact: true })).toBeVisible();
   });
   await check('Campaign draft, personalization preview, and safe exclusions', async () => {
-    await page.goto('http://127.0.0.1:3100/#campaigns');
+    await page.goto('http://127.0.0.1:3100/campaigns');
     await page.getByRole('button', { name: 'Create campaign', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Create a campaign' });
     await dialog.getByLabel('Campaign name', { exact: true }).fill(`Browser QA sequence ${runId}`);
@@ -185,7 +293,7 @@ try {
   });
   await check('Normal Inbox composes to a new address without creating a contact or submitting mail', async () => {
     const recipient = `new-inbox-person-${runId}@example.test`;
-    await page.goto('http://127.0.0.1:3100/#inbox', { waitUntil: 'networkidle' });
+    await page.goto('http://127.0.0.1:3100/inbox', { waitUntil: 'networkidle' });
     await page.getByRole('button', { name: 'New message', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'New message', exact: true });
     await dialog.getByLabel('From mailbox', { exact: true }).selectOption(composeMailboxId);
@@ -202,7 +310,7 @@ try {
     expect(await db('send_attempts')).toHaveLength(0);
   });
   await check('Normal Inbox replies to an unmatched sender without a contact matching flow', async () => {
-    await page.goto(`http://127.0.0.1:3100/#inbox/${inboundMessageId}`, { waitUntil: 'networkidle' });
+    await page.goto(`http://127.0.0.1:3100/inbox/${inboundMessageId}`, { waitUntil: 'networkidle' });
     await expect(page.getByRole('button', { name: /match.*contact/i })).toHaveCount(0);
     await page.getByRole('textbox', { name: 'Reply message', exact: true }).fill('A normal contactless reply, queued only.');
     await expect(page.getByRole('button', { name: 'Queue reply', exact: true })).toBeEnabled();
@@ -217,7 +325,7 @@ try {
   });
   await check('Normal Inbox compose modal fits a mobile screen', async () => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto('http://127.0.0.1:3100/#inbox', { waitUntil: 'networkidle' });
+    await page.goto('http://127.0.0.1:3100/inbox', { waitUntil: 'networkidle' });
     await page.getByRole('button', { name: 'New message', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'New message', exact: true });
     await expect(dialog.getByLabel('To email', { exact: true })).toBeVisible();
@@ -229,7 +337,7 @@ try {
   });
   await check('Every dashboard page renders without runtime or API failures', async () => {
     for (const route of ['overview', 'prospects', 'campaigns', 'templates', 'inbox', 'pipeline', 'analytics', 'suppressions', 'settings/accounts', 'settings/sending', 'settings/tracking', 'settings/crm', 'settings/team', 'health']) {
-      await page.goto(`http://127.0.0.1:3100/#${route}`, { waitUntil: 'networkidle' });
+      await page.goto(`http://127.0.0.1:3100/${route}`, { waitUntil: 'networkidle' });
       await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
       await expect(page.getByText('We couldn’t complete that request', { exact: true })).toHaveCount(0);
       await noPageOverflow(page, route);
@@ -239,11 +347,11 @@ try {
     for (const viewport of [{ width: 1024, height: 1000 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       for (const route of ['overview', 'prospects', 'pipeline', 'settings/sending', 'analytics', 'inbox']) {
-        await page.goto(`http://127.0.0.1:3100/#${route}`, { waitUntil: 'networkidle' });
+        await page.goto(`http://127.0.0.1:3100/${route}`, { waitUntil: 'networkidle' });
         await noPageOverflow(page, `${viewport.width}px ${route}`);
       }
     }
-    await page.goto('http://127.0.0.1:3100/#overview', { waitUntil: 'networkidle' });
+    await page.goto('http://127.0.0.1:3100/overview', { waitUntil: 'networkidle' });
     await page.screenshot({ path: path.join(artifacts, 'crm-mobile.png'), fullPage: true });
   });
   expect(failures, 'Browser runtime errors').toEqual([]);
@@ -256,6 +364,6 @@ try {
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close();
-  if (server) await new Promise(resolve => server.close(resolve));
+  await stopNextServer();
   if (db) await db.destroy();
 }

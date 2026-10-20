@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import knex, { type Knex } from 'knex';
 
-export const db = knex({
+const createDatabase = () => knex({
   client: 'mysql2',
   connection: {
     host: process.env.DB_HOST || '127.0.0.1', port: Number(process.env.DB_PORT || 3306),
@@ -13,6 +13,11 @@ export const db = knex({
   pool: { min: 0, max: Number(process.env.DB_POOL_SIZE || 5), afterCreate(connection: any, done: any) { connection.query("SET time_zone = '+00:00'", (err: unknown) => done(err, connection)); } },
   acquireConnectionTimeout: 10000,
 });
+// Next development reloads route modules. Reuse the pool rather than leaking one
+// per reload; isolated test modules deliberately own and destroy their own pool.
+const runtimeEnv=process.env;
+const processState=globalThis as typeof globalThis & {emailCrmDatabase?:Knex};
+export const db=runtimeEnv.NODE_ENV==='test'?createDatabase():(processState.emailCrmDatabase??=createDatabase());
 export type Database = Knex | Knex.Transaction;
 export function json<T = any>(value: unknown, fallback: unknown = {}): T {
   if (value == null) return fallback as T;

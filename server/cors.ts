@@ -1,4 +1,4 @@
-import type { Request,Response,NextFunction } from 'express';
+import type { Request,Response,NextFunction } from './http.js';
 import { config } from './config.js';
 import { isAllowedOrigin } from './lib/origins.js';
 import { HttpError } from './lib/util.js';

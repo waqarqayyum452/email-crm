@@ -30,6 +30,8 @@ The actual `next start` walkthrough passes **14 checks**, including native page/
 
 The Hostinger production-mode regression was also reproduced and checked: exporting `NODE_ENV=development` caused the original `/_global-error` prerender failure; after the launcher fix, a clean build under the same inherited value succeeds. The browser harness now starts through `scripts/next.mjs` with development mode supplied to its child, and all 14 checks pass with production Secure cookies. These checks exercise mode enforcement rather than assuming a dependency mismatch.
 
+The production-only installation was separately verified on Node 24.22.0 using a fresh copy of tracked source, no private `.env` or generated build files, and `NODE_ENV=production`. `npm ci --omit=dev` completed with zero audit findings; all eight compiler/type dependencies resolved inside that isolated installation while Vitest and `tsx` were absent. `npm run build` then passed both TypeScript checks, Next.js compilation/prerendering, and CLI compilation into `dist`. Package versions were unchanged. This verifies the install/build path locally; it does not verify a Hostinger deployment or execute database maintenance or mail.
+
 ## Earlier implementation evidence
 
 The recorded passes in this section predate the Next.js migration. They document earlier domain/database behavior; the current runtime's results are recorded separately above and in [progress.md](progress.md).

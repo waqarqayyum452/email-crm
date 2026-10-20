@@ -45,6 +45,8 @@ npm start
 
 `npm run build` runs TypeScript checks, builds Next.js into `.next`, then compiles the server/CLI tools into `dist` through `build:tools`. `npm start` runs `next start`; no custom HTTP server entry is required. Existing database tables, mailbox ciphertext, jobs and records are retained by this framework migration; it requires no new data migration. See [progress](docs/progress.md) for the validation status of the Next.js build.
 
+TypeScript and the required application type packages are included in `dependencies` so hosting builds also work after `npm ci --omit=dev` with `NODE_ENV=production`. Test tools and `tsx` remain development dependencies; use `npm ci --include=dev` for local development and tests. A production-only installation uses the compiled commands such as `node dist/scripts/migrate.js` and `node dist/scripts/doctor.js` after building; see [Hostinger instructions](docs/hostinger.md).
+
 The `scripts/next.mjs` launcher selects production mode for build/start and development mode for dev before loading Next or React. Keep Hostinger's `NODE_ENV=production` as well, including when its platform starts Next directly. React and React DOM are pinned together at 19.3.1 with React 19.3 type packages; the committed lockfile preserves the tested dependency tree. Root-layout failures use the standalone `app/global-error.tsx` fallback.
 
 Use `npm run dev` for ordinary local HTTP use. Production startup uses Secure cookies and requires an HTTPS dashboard URL. The isolated browser check provides a separate HTTP test environment without touching real CRM credentials or enabling mail.

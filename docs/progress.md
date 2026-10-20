@@ -84,6 +84,14 @@ The schema, Knex/mysql2 database layer, encrypted mailbox data, scheduled jobs a
 
 These checks used Node 24.22.0, the separate loopback MariaDB 11.4.8 on port 3308, fake transports, and private generated browser fixtures with live sending disabled and no worker. Desktop and mobile screenshots were inspected. The browser fixture exercises production HTTPS configuration and Secure cookies using Chromium's trustworthy loopback behavior; it does not prove a public TLS deployment. No real CRM data, mailbox credentials or encryption keys were changed. The local dashboard URL was moved from port 5173 to port 3000, retaining other environment settings. No deployment, DNS change or live-mail submission is part of the framework migration.
 
+## Hostinger production-mode build fix
+
+The reported `/_global-error` prerender exception (`Cannot read properties of null (reading 'use')`) was reproduced locally by exporting `NODE_ENV=development` before the build. The installed dependency tree already contained a single deduplicated React/React DOM 19.3.1 pair. Their versions are now pinned exactly, together with the existing React 19.3.0 type packages, while preserving the tested lockfile.
+
+`scripts/next.mjs` sets the correct mode before loading Next/React: production for build/start and development for dev. It loads the CLI in the same process, preserving ordinary signals and process lifecycle. `app/global-error.tsx` supplies a standalone client fallback with its own HTML/body and no layout/provider dependencies or raw error details. Hostinger must also set `NODE_ENV=production` for any platform-controlled commands that bypass npm scripts.
+
+A clean build with the same inherited `NODE_ENV=development` now succeeds, including prerendering and CLI-tool compilation. All **14 browser checks** pass with production startup deliberately given that development value, including Secure/HttpOnly/SameSite cookies and the normal CRM/Inbox flows. Dependency audit remains at **0 vulnerabilities**. Checks used isolated loopback fixtures, disabled live sending and no mail worker; no real database or private environment settings were changed. Actual Hostinger redeployment remains a separate verification step.
+
 ## Deliberately deferred
 
 - OAuth mailbox providers; the transport boundary supports a later adapter, but no working OAuth sign-in/refresh implementation is represented.

@@ -42,8 +42,10 @@ async function startNextServer() {
   const probe = createPortProbe();
   await new Promise((resolve, reject) => { probe.once('error', reject); probe.listen(3100, '127.0.0.1', resolve); });
   await new Promise((resolve, reject) => { probe.close(error => error ? reject(error) : resolve()); });
-  const child = spawn(process.execPath, [path.join(projectRoot, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', '3100'], {
-    cwd: projectRoot, env: { ...process.env }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+  // Regress the Hostinger configuration: the launcher must enforce production
+  // even when the panel exported a development environment before startup.
+  const child = spawn(process.execPath, [path.join(projectRoot, 'scripts/next.mjs'), 'start', '--hostname', '127.0.0.1', '--port', '3100'], {
+    cwd: projectRoot, env: { ...process.env, NODE_ENV: 'development' }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
   server = child;
   child.stdout.on('data', chunk => { serverOutput = (serverOutput + chunk).slice(-8000); });

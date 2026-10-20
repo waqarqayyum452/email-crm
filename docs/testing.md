@@ -28,6 +28,8 @@ The production Next.js 16.4.2 build and both TypeScript checks pass. The isolate
 
 The actual `next start` walkthrough passes **14 checks**, including native page/deep-link navigation, contact persistence, campaign/template editing, normal Inbox compose/reply without contacts, authenticated CSV downloads, unique CSP script nonces, Secure/HttpOnly/SameSite session cookies, public tracking, unsubscribe confirmation/one-click handling, legacy bookmark conversion and mobile layouts. Screenshots were visually inspected. The browser fixture uses generated credentials, production configuration with an explicit loopback origin, a separate local `*_ui_test` database, disabled live sending and no worker. It does not read the user's private `.env`, send email or verify public hosting/TLS. See [progress.md](progress.md) for remaining Hostinger release checks.
 
+The Hostinger production-mode regression was also reproduced and checked: exporting `NODE_ENV=development` caused the original `/_global-error` prerender failure; after the launcher fix, a clean build under the same inherited value succeeds. The browser harness now starts through `scripts/next.mjs` with development mode supplied to its child, and all 14 checks pass with production Secure cookies. These checks exercise mode enforcement rather than assuming a dependency mismatch.
+
 ## Earlier implementation evidence
 
 The recorded passes in this section predate the Next.js migration. They document earlier domain/database behavior; the current runtime's results are recorded separately above and in [progress.md](progress.md).

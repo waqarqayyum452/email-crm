@@ -45,6 +45,8 @@ npm start
 
 `npm run build` runs TypeScript checks, builds Next.js into `.next`, then compiles the server/CLI tools into `dist` through `build:tools`. `npm start` runs `next start`; no custom HTTP server entry is required. Existing database tables, mailbox ciphertext, jobs and records are retained by this framework migration; it requires no new data migration. See [progress](docs/progress.md) for the validation status of the Next.js build.
 
+The `scripts/next.mjs` launcher selects production mode for build/start and development mode for dev before loading Next or React. Keep Hostinger's `NODE_ENV=production` as well, including when its platform starts Next directly. React and React DOM are pinned together at 19.3.1 with React 19.3 type packages; the committed lockfile preserves the tested dependency tree. Root-layout failures use the standalone `app/global-error.tsx` fallback.
+
 Use `npm run dev` for ordinary local HTTP use. Production startup uses Secure cookies and requires an HTTPS dashboard URL. The isolated browser check provides a separate HTTP test environment without touching real CRM credentials or enabling mail.
 
 `ALLOWED_ORIGINS` controls API CORS. Leave it blank to allow the `APP_URL` origin, add comma-separated exact canonical HTTP(S) origins to trust additional origins, or use `*` to accept any valid HTTP(S) API origin. `APP_URL` remains the actual dashboard/link URL. CORS sends no `Access-Control-Allow-Credentials`; sessions remain same-origin and CSRF/permissions still apply, so wildcard access does not enable a separately hosted authenticated dashboard. Restart the app after changing these variables.

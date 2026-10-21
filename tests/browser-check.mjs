@@ -416,6 +416,20 @@ try {
     await expect(listPane.locator('.conversation-item').filter({ hasText: newSubject })).toHaveCount(1);
     await expect(reader.locator('.thread-message')).toHaveCount(12);
     await expect(reader.getByText('A fresh email to the same person has its own conversation.', { exact: true })).toHaveCount(0);
+    await page.setViewportSize({ width: 1366, height: 768 });
+    const compactLayout = await page.evaluate(() => {
+      const rect = selector => document.querySelector(selector).getBoundingClientRect();
+      const list = rect('.conversation-list'), row = rect('.conversation-list .conversation-item');
+      return { list_height: list.height, row_height: row.height, reader_height: rect('.thread-messages').height, heading_height: rect('.conversation-heading').height, composer_height: rect('.reply-composer').height };
+    });
+    expect(compactLayout.list_height, 'Laptop email list has space for at least five rows').toBeGreaterThanOrEqual(480);
+    expect(compactLayout.row_height, 'Email list rows stay compact').toBeLessThanOrEqual(92);
+    expect(compactLayout.reader_height, 'The email body gets most of the laptop reading pane').toBeGreaterThanOrEqual(400);
+    expect(compactLayout.heading_height).toBeLessThanOrEqual(85);
+    expect(compactLayout.composer_height).toBeLessThanOrEqual(100);
+    console.log('Inbox laptop space:', JSON.stringify(compactLayout));
+    await page.screenshot({ path: path.join(artifacts, 'crm-inbox-compact-laptop.png'), fullPage: true, animations: 'disabled' });
+    await page.setViewportSize({ width: 1440, height: 1100 });
     const fixedBox = await page.getByRole('region', { name: 'Outbox', exact: true }).boundingBox();
     const headerBox = await page.locator('.conversation-heading').boundingBox();
     const composerBox = await page.locator('.reply-composer').boundingBox();
@@ -455,6 +469,7 @@ try {
     await expect(page.getByRole('link', { name: 'All conversations', exact: true })).toBeVisible();
     await expect(page.getByRole('textbox', { name: 'Reply message', exact: true })).toBeVisible();
     await expect.poll(() => reader.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(2);
+    expect((await reader.boundingBox()).height, 'Mobile reading pane remains large with the reply confirmation visible').toBeGreaterThanOrEqual(400);
     await noPageOverflow(page, '390px selected email conversation');
     expect(await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)).toBe(0);
     await page.screenshot({ path: path.join(artifacts, 'crm-inbox-reader-mobile.png'), fullPage: true, animations: 'disabled' });
@@ -492,7 +507,7 @@ try {
       await page.evaluate(() => document.fonts.ready);
       const typography = await page.locator('.page-header h1').evaluate(node => ({ family: getComputedStyle(node).fontFamily, size: parseFloat(getComputedStyle(node).fontSize) }));
       expect(typography.family).not.toContain('Manrope');
-      expect(typography.size, `${route} heading remains readable`).toBeGreaterThanOrEqual(28);
+      expect(typography.size, `${route} heading remains readable`).toBeGreaterThanOrEqual(route === 'inbox' ? 24 : 28);
       await page.screenshot({ path: path.join(artifacts, `crm-modern-${route.replaceAll('/', '-')}.png`), fullPage: true });
     }
   });

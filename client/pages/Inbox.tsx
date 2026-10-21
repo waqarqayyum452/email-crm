@@ -80,7 +80,7 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
             const active = selected === m.id || m.message_ids?.includes(selected);
             return <Link className={`conversation-item ${active ? 'active' : ''}`} key={m.thread_id || m.id} href={`/inbox/${m.id}`} scroll={false} aria-current={active ? 'page' : undefined}>
               <div className="conversation-top"><span className="avatar contact-avatar">{initials(participant(m) || 'Mail')}</span><strong>{participant(m) || 'Message'}</strong><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time></div>
-              <div className="conversation-subject"><h3>{m.subject || '(No subject)'}</h3>{m.message_count > 1 && <span className="conversation-count" aria-label={`${m.message_count} messages in conversation`}>{m.message_count}</span>}</div><p>{m.preview || 'Open to read this conversation.'}</p><MessageStatus message={m} />
+              <div className="conversation-subject"><h3>{m.subject || '(No subject)'}</h3>{m.message_count > 1 && <span className="conversation-count" aria-label={`${m.message_count} messages in conversation`}>{m.message_count}</span>}</div><div className="conversation-preview"><p>{m.preview || 'Open to read this conversation.'}</p>{(m.send_status || !['unmatched', 'outbound'].includes(m.classification)) && <MessageStatus message={m} />}</div>
             </Link>;
           }) : <Empty title="A little quiet, for now." description="Synced messages and your conversations will appear here." />}</Resource></div>
         </aside>
@@ -167,8 +167,8 @@ function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
     <div className="conversation-heading">
       <Link href="/inbox" className="text-link conversation-back"><ArrowLeft size={17} />All conversations</Link>
       <div className="conversation-title"><h2>{data.conversation_subject || message.subject || '(No subject)'}</h2><MessageStatus message={replySource} /></div>
-      <p className="conversation-with">Conversation with: <strong>{replyRecipient || 'No reply address available'}</strong></p>
-      <details className="conversation-options"><summary>Mailbox & assignment <ChevronDown size={14} /></summary><p>Mailbox: {mailbox?.email || (message.direction === 'outbound' ? message.from_email : message.to_email)}</p>
+      <p className="conversation-with">With <strong>{replyRecipient || 'No reply address available'}</strong></p>
+      <details className="conversation-options"><summary>Details <ChevronDown size={14} /></summary><p>Mailbox: {mailbox?.email || (message.direction === 'outbound' ? message.from_email : message.to_email)}</p>
       {can('inbox:write') && <div className="conversation-management"><Field label="Assigned teammate"><select value={message.assigned_to || ''} onChange={e => { act(`/inbox/${id}`, patch({ assigned_to: e.target.value || null }), 'Conversation assignment updated.').catch(() => {}); }}><option value="">Unassigned</option>{users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select></Field></div>}</details>
     </div>
     <div className="thread-messages" ref={scrollRef} role="region" aria-label="Conversation messages" tabIndex={0} onScroll={() => { const node = scrollRef.current; if (node) { followLatest.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80; if (followLatest.current) setNewMessages(false); } }}>{thread.map((m: Row, i: number) => <article className={`thread-message ${m.direction === 'outbound' ? 'outbound' : ''}`} key={m.id || i}>
@@ -177,20 +177,19 @@ function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
       <HtmlPreview html={m.body_html || m.html} text={m.body_text || m.text} />
     </article>)}</div>
     {newMessages && <button className="new-messages-button" onClick={scrollToLatest}><ArrowDown size={15} />New messages: jump to latest</button>}
-    {can('inbox:write') && <form className="reply-composer" onSubmit={async e => {
+    {can('inbox:write') && <form className="reply-composer" aria-label={`Reply to ${replyRecipient}`} onSubmit={async e => {
       e.preventDefault();
       if (!message.id || !validEmail(replyRecipient)) return;
       setBusy(true); setError(''); setQueued('');
       try {
         await act(`/inbox/${replySource.id}/reply`, body({ body_text: reply }));
-        setQueued(`Reply added to Outbox for ${replyRecipient}. Its sending status updates automatically.`);
+        setQueued('Reply added to Outbox. Sending status updates automatically.');
         setReply('');
         processInbox('inbox', refresh, notify);
       } catch (err: any) { setError(err.message); } finally { setBusy(false); }
     }}>
-      <h3><Send size={16} />Write a reply</h3><p>Reply to <strong>{replyRecipient || 'No reply address available'}</strong>{mailbox?.email ? <> from <strong>{mailbox.email}</strong></> : ''}.</p>
-      <textarea aria-label="Reply message" rows={3} required maxLength={100000} disabled={busy || !validEmail(replyRecipient)} value={reply} onChange={e => setReply(e.target.value)} placeholder="Keep the conversation going…" />
-      <div className="reply-footer"><span>Sending status updates automatically in Outbox.</span><Button type="submit" busy={busy} disabled={!message.id || !validEmail(replyRecipient) || !reply.trim()}><Send size={15} />Queue reply</Button></div>
+      <textarea aria-label="Reply message" rows={2} required maxLength={100000} disabled={busy || !validEmail(replyRecipient)} value={reply} onChange={e => setReply(e.target.value)} placeholder="Write a reply…" />
+      <div className="reply-footer"><Button type="submit" busy={busy} disabled={!message.id || !validEmail(replyRecipient) || !reply.trim()}><Send size={15} />Queue reply</Button></div>
       {!validEmail(replyRecipient) && <FormError error="This message has no valid reply address. Use New message to write to an email address." />}
       {queued && <div className="inbox-queue-confirmation" role="status"><CheckCircle2 size={16} /><span>{queued}</span></div>}
       <FormError error={error} />

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export type Row = Record<string, any>;
 export type Session = { user: { id: string; name: string; email: string; role: string; permissions: string[] } | null; csrfToken: string };
@@ -26,19 +26,71 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
 export const body = (data: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(data) });
 export const patch = (data: unknown): RequestInit => ({ method: 'PATCH', body: JSON.stringify(data) });
 export function list(data: any): Row[] { return Array.isArray(data) ? data : data?.items || []; }
-export function useResource<T = any>(path: string | null, revision = 0) {
+export type ResourceOptions = { pollIntervalMs?: number; refreshOnFocus?: boolean; keepPreviousData?: boolean };
+export function useResource<T = any>(path: string | null, revision = 0, options: ResourceOptions = {}) {
+  const { pollIntervalMs = 0, refreshOnFocus = false, keepPreviousData = false } = options;
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState('');
+  const [refreshError, setRefreshError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [count, setCount] = useState(0);
+  const loaded = useRef<{ path: string; data: T } | null>(null);
   useEffect(() => {
     let alive = true;
-    if (!path) { setLoading(false); return; }
-    setLoading(true); setError('');
-    api<T>(path).then(value => { if (alive) setData(value); }).catch(e => { if (alive) setError(e.message); }).finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [path, revision, count]);
-  return { data, error, loading, reload: () => setCount(v => v + 1) };
+    let controller: AbortController | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let requestTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearTimer = () => { if (timer !== undefined) clearTimeout(timer); timer = undefined; };
+    if (!path) { loaded.current = null; setData(null); setError(''); setRefreshError(''); setLoading(false); setRefreshing(false); return; }
+    const resourcePath = path;
+    // Quiet refreshes keep forms mounted, including an unfinished Inbox reply.
+    const hasData = () => keepPreviousData && loaded.current?.path === resourcePath;
+    if (loaded.current?.path !== resourcePath) { loaded.current = null; setData(null); }
+    setLoading(!hasData()); setError(''); setRefreshError('');
+    const schedule = () => {
+      clearTimer();
+      // Start the next interval after completion, so slow requests never stack.
+      if (alive && pollIntervalMs > 0 && !document.hidden) timer = setTimeout(() => { void fetchResource(); }, pollIntervalMs);
+    };
+    const fetchResource = async () => {
+      if (!alive || controller) return;
+      clearTimer();
+      const request = new AbortController(); controller = request;
+      let timedOut = false;
+      if (pollIntervalMs > 0) requestTimer = setTimeout(() => { timedOut = true; request.abort(); }, 30000);
+      setRefreshing(hasData());
+      try {
+        const value = await api<T>(resourcePath, { signal: request.signal });
+        if (!alive) return;
+        loaded.current = { path: resourcePath, data: value }; setData(value); setError(''); setRefreshError('');
+      } catch (err: any) {
+        if (!alive || (request.signal.aborted && !timedOut)) return;
+        const message = timedOut ? 'The connection timed out.' : err.message || 'Unable to refresh.';
+        if (hasData()) setRefreshError(message);
+        else setError(message);
+      } finally {
+        if (requestTimer !== undefined) clearTimeout(requestTimer); requestTimer = undefined;
+        if (alive) { controller = null; setLoading(false); setRefreshing(false); schedule(); }
+      }
+    };
+    const resume = () => { if (!document.hidden) void fetchResource(); };
+    const visibility = () => { if (document.hidden) clearTimer(); else resume(); };
+    void fetchResource();
+    if (pollIntervalMs > 0 || refreshOnFocus) {
+      document.addEventListener('visibilitychange', visibility);
+      window.addEventListener('online', resume);
+    }
+    if (refreshOnFocus) window.addEventListener('focus', resume);
+    return () => {
+      alive = false; clearTimer(); controller?.abort();
+      if (requestTimer !== undefined) clearTimeout(requestTimer);
+      document.removeEventListener('visibilitychange', visibility);
+      window.removeEventListener('focus', resume); window.removeEventListener('online', resume);
+    };
+  }, [path, revision, count, pollIntervalMs, refreshOnFocus, keepPreviousData]);
+  const reload = useCallback(() => setCount(v => v + 1), []);
+  return { data, error, refreshError, loading, refreshing, reload };
 }
 export function date(value: any, time = false) {
   if (!value) return 'Not yet';

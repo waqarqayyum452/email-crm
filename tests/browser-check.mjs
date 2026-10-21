@@ -302,21 +302,26 @@ try {
     await dialog.getByLabel('To email', { exact: true }).fill(recipient);
     await dialog.getByLabel('Subject', { exact: true }).fill('Browser QA personal message');
     await dialog.getByLabel('Message', { exact: true }).fill('An isolated normal email queued while live sending is disabled.');
+    const processed = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/inbox/process');
     const queued = await mutate(page, 'POST', '/inbox/compose', () => dialog.getByRole('button', { name: 'Queue message', exact: true }).click());
     await expect(dialog).not.toBeVisible();
+    expect((await processed).status()).toBe(200);
     const job = await db('jobs').where({ id: queued.job_id }).first();
     const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
     expect(payload).toMatchObject({ is_manual: true, manual_recipient: recipient, contact_id: null });
     expect(job.account_id).toBe(composeMailboxId); expect(job.status).toBe('queued');
     expect(await db('contacts').where({ email: recipient })).toHaveLength(0);
     expect(await db('send_attempts')).toHaveLength(0);
+    await expect(page.getByRole('region', { name: 'Outbox', exact: true }).getByText('Browser QA personal message', { exact: true })).toBeVisible();
   });
   await check('Normal Inbox replies to an unmatched sender without a contact matching flow', async () => {
     await page.goto(`http://127.0.0.1:3100/inbox/${inboundMessageId}`, { waitUntil: 'networkidle' });
     await expect(page.getByRole('button', { name: /match.*contact/i })).toHaveCount(0);
     await page.getByRole('textbox', { name: 'Reply message', exact: true }).fill('A normal contactless reply, queued only.');
     await expect(page.getByRole('button', { name: 'Queue reply', exact: true })).toBeEnabled();
+    const processed = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/inbox/process');
     const queued = await mutate(page, 'POST', `/inbox/${inboundMessageId}/reply`, () => page.getByRole('button', { name: 'Queue reply', exact: true }).click());
+    expect((await processed).status()).toBe(200);
     const job = await db('jobs').where({ id: queued.job_id }).first();
     const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
     expect(payload).toMatchObject({ is_manual: true, is_reply: true, manual_recipient: inboxSender, reply_source_id: inboundMessageId });
@@ -324,6 +329,66 @@ try {
     expect(await db('contacts').where({ email: inboxSender })).toHaveLength(0);
     expect(await db('send_attempts')).toHaveLength(0);
     await page.screenshot({ path: path.join(artifacts, 'crm-inbox-contactless.png'), fullPage: true });
+  });
+  await check('Inbox refreshes incoming mail, preserves drafts through failures, and pauses hidden polling without overlap', async () => {
+    await page.goto(`http://127.0.0.1:3100/inbox/${inboundMessageId}`, { waitUntil: 'networkidle' });
+    const draft = page.getByRole('textbox', { name: 'Reply message', exact: true });
+    await draft.fill('An unfinished reply must survive automatic updates.');
+    const incomingId = randomUUID(), receivedAt = new Date();
+    await db('messages').insert({
+      id: incomingId, account_id: composeMailboxId, contact_id: null, direction: 'inbound',
+      message_id: `<live-inbox-${runId}@example.test>`, references_json: '[]', from_email: inboxSender,
+      to_email: `normal-inbox-${runId}@example.test`, subject: `Automatic inbox update ${runId}`,
+      body_text: `New incoming message ${runId}`, classification: 'unmatched', is_test: false, received_at: receivedAt, created_at: receivedAt,
+    });
+    await expect(page.locator('.conversation-list').getByText(`Automatic inbox update ${runId}`, { exact: true })).toBeVisible({ timeout: 16000 });
+    await expect(page.locator('.thread-messages').getByText(`New incoming message ${runId}`, { exact: true })).toBeVisible({ timeout: 16000 });
+    await expect(draft).toHaveValue('An unfinished reply must survive automatic updates.');
+
+    const detailPath = `/api/inbox/${inboundMessageId}`;
+    const detailUrl = `http://127.0.0.1:3100${detailPath}`;
+    const failRefresh = route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Temporary browser fixture outage.' }) });
+    await page.route(detailUrl, failRefresh);
+    await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === detailPath && response.status() === 503),
+      page.evaluate(() => window.dispatchEvent(new Event('focus'))),
+    ]);
+    await expect(page.getByText('This conversation could not refresh. Retrying automatically; your reply draft is kept.', { exact: true })).toBeVisible();
+    await expect(draft).toHaveValue('An unfinished reply must survive automatic updates.');
+    await expect(page.locator('.thread-messages').getByText(`New incoming message ${runId}`, { exact: true })).toBeVisible();
+    await page.unroute(detailUrl, failRefresh);
+    await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === detailPath && response.ok()),
+      page.evaluate(() => window.dispatchEvent(new Event('online'))),
+    ]);
+
+    let requests = 0, release;
+    const blocked = new Promise(resolve => { release = resolve; });
+    let hold = false;
+    const countRefresh = async route => { requests++; if (hold) await blocked; await route.continue(); };
+    await page.route(detailUrl, countRefresh);
+    try {
+      await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')); });
+      const beforeHidden = requests;
+      await delay(10500);
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      expect(requests, 'A hidden Inbox does not poll or refresh on focus').toBe(beforeHidden);
+      hold = true;
+      await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')); });
+      await expect.poll(() => requests).toBe(beforeHidden + 1);
+      await page.evaluate(() => { window.dispatchEvent(new Event('focus')); window.dispatchEvent(new Event('online')); window.dispatchEvent(new Event('focus')); });
+      await delay(200);
+      expect(requests, 'Focus/online events share the in-flight request').toBe(beforeHidden + 1);
+      await expect(draft).toHaveValue('An unfinished reply must survive automatic updates.');
+      const resumed = page.waitForResponse(response => new URL(response.url()).pathname === detailPath && response.ok());
+      release();
+      await resumed;
+    } finally {
+      release();
+      await page.unroute(detailUrl, countRefresh);
+      await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); });
+    }
+    expect(await db('send_attempts')).toHaveLength(0);
   });
   await check('Normal Inbox compose modal fits a mobile screen', async () => {
     await page.setViewportSize({ width: 390, height: 844 });

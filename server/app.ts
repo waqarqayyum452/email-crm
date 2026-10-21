@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { z } from 'zod';
 import { config,validateConfig } from './config.js';
 import { authRouter,userRouter,loadSession,csrfProtect } from './auth.js';
 import { settingsRouter,accountRouter } from './settings.js';
@@ -11,6 +12,8 @@ import { runWorker } from './worker.js';
 import { secureEqual } from './lib/crypto.js';
 import { HttpError } from './lib/util.js';
 import { apiCors } from './cors.js';
+import { activateLiveInbox,liveInboxStatus } from './lib/live-inbox.js';
+import { installHostingerScheduler,SchedulerInstallError } from './lib/scheduler-install.js';
 import { HttpResponse,requestContext,parseBody,runHandlers,errorResponse,nodeHandler } from './http.js';
 
 const routes=[
@@ -53,12 +56,17 @@ export async function handleRequest(request:globalThis.Request,options?:{remoteA
     } else if(req.path==='/internal/tick'&&req.method==='POST'){
       if(!config.schedulerSecret||!secureEqual(req.headers.authorization||'','Bearer '+config.schedulerSecret))throw new HttpError(401,'Unauthorized scheduler request.');
       await parseBody(request,req,1024);
-      res.set('Cache-Control','no-store').json(await runWorker({budgetMs:18000,maxJobs:10}));
+      const command=z.object({action:z.enum(['run','status','install','activate-inbox']).default('run'),mode:z.enum(['all','sync','inbox']).default('all')}).strict().parse(req.body||{});
+      const result=command.action==='status'?await liveInboxStatus()
+        :command.action==='install'?await installHostingerScheduler()
+        :command.action==='activate-inbox'?await activateLiveInbox()
+        :await runWorker({budgetMs:18000,maxJobs:10,syncOnly:command.mode==='sync',inboxOnly:command.mode==='inbox'});
+      res.set('Cache-Control','no-store').json(result);
     } else {
       if(req.path.startsWith('/unsubscribe/'))await parseBody(request,req,2048,'form');
       if(!await publicRouter.dispatch(req,res))throw new HttpError(404,'Not found.');
     }
-  } catch(error){errorResponse(error,res);}
+  } catch(error){errorResponse(error instanceof SchedulerInstallError?new HttpError(503,error.message,{code:error.code}):error,res);}
   return res.toResponse(req.method);
 }
 

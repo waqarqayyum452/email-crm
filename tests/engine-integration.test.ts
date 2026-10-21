@@ -10,7 +10,7 @@ vi.mock('../server/engine/mail.js',async importOriginal=>{
 });
 import { db, json } from '../server/db.js';
 import { config } from '../server/config.js';
-import { claimJob, reserveSend, recoverExpiredLeases, finishAccepted, runWorker, reconcileAttempt, retryFailedJobs } from '../server/worker.js';
+import { claimJob, reserveSend, recoverExpiredLeases, finishAccepted, runWorker, reconcileAttempt, retryFailedJobs, requestSync } from '../server/worker.js';
 import { ingestIncoming, findReply } from '../server/engine/mail.js';
 import { suppressEmail } from '../server/engine/policy.js';
 import { publicRouter } from '../server/tracking.js';
@@ -71,6 +71,72 @@ describe.skipIf(!enabled)('durable engine against an isolated MySQL/MariaDB test
     while(claimed.filter(Boolean).length<2){const next=await claimJob(uuid());expect(next).toBeTruthy();claimed.push(next);}
     expect(claimed.filter(Boolean)).toHaveLength(2);expect(new Set(claimed.filter(Boolean).map(j=>j.id)).size).toBe(2);
     expect(await db('jobs').where({status:'leased'})).toHaveLength(2);
+  });
+
+  it('deduplicates concurrent mailbox sync requests, including an in-progress scan',async()=>{
+    const requested=await Promise.all(Array.from({length:4},()=>requestSync(account.id)));
+    expect(new Set(requested).size).toBe(1);expect(await db('jobs').where({kind:'sync'})).toHaveLength(1);
+    const leased=await claimJob(uuid(),true);expect(leased.id).toBe(requested[0]);
+    expect(await requestSync(account.id)).toBe(leased.id);expect(await db('jobs').where({kind:'sync'})).toHaveLength(1);
+  });
+
+  it('schedules the next minute from scan start rather than its completion time',async()=>{
+    await runWorker({budgetMs:20000,maxJobs:5,syncOnly:true});
+    const first=await db('jobs').where({kind:'sync'}).first();expect(first.status).toBe('completed');
+    await db('jobs').where({id:first.id}).update({created_at:new Date(Date.now()-61000),updated_at:new Date(Date.now()-58000)});
+    await runWorker({budgetMs:20000,maxJobs:5,syncOnly:true});
+    expect(fake.syncMailbox).toHaveBeenCalledTimes(2);expect(await db('jobs').where({kind:'sync'})).toHaveLength(2);
+    await runWorker({budgetMs:20000,maxJobs:5,syncOnly:true});
+    expect(fake.syncMailbox).toHaveBeenCalledTimes(2);expect(await db('send_attempts')).toHaveLength(0);expect(fake.sendMail).not.toHaveBeenCalled();
+  });
+
+  it('continues an incomplete old scan without creating overlapping mailbox jobs',async()=>{
+    const syncId=await requestSync(account.id);await db('jobs').where({id:syncId}).update({created_at:new Date(Date.now()-120000)});
+    fake.syncMailbox.mockResolvedValueOnce({processed:50,complete:false});
+    await runWorker({budgetMs:20000,maxJobs:1,syncOnly:true});
+    expect((await db('jobs').where({id:syncId}).first()).status).toBe('queued');
+    await db('jobs').where({id:syncId}).update({due_at:date()});
+    await runWorker({budgetMs:20000,maxJobs:1,syncOnly:true});
+    expect(fake.syncMailbox).toHaveBeenCalledTimes(2);expect(await db('jobs').where({kind:'sync'})).toHaveLength(1);expect((await db('jobs').where({id:syncId}).first()).status).toBe('completed');
+  });
+
+  it('limits Inbox workers to sync and strictly typed manual sends, with sync-only taking precedence',async()=>{
+    const campaignJob=await insertJob(),malformedManual=await insertJob({payload:JSON.stringify({is_manual:'true',manual_recipient:'unreviewed@example.test'})});
+    const manual=await compose('inbox-only@example.test');expect(manual.status).toBe(202);
+    await runWorker({budgetMs:20000,maxJobs:5,inboxOnly:true});
+    expect(fake.syncMailbox).toHaveBeenCalledTimes(1);expect(fake.sendMail).toHaveBeenCalledTimes(1);expect(fake.sendMail.mock.calls[0][0].to).toBe('inbox-only@example.test');
+    expect((await db('jobs').where({id:campaignJob.id}).first()).status).toBe('queued');expect((await db('jobs').where({id:malformedManual.id}).first()).status).toBe('queued');
+    const heldManual=await compose('sync-only@example.test');expect(heldManual.status).toBe(202);
+    await runWorker({budgetMs:20000,maxJobs:5,syncOnly:true,inboxOnly:true});
+    expect(fake.sendMail).toHaveBeenCalledTimes(1);expect(await db('send_attempts').where({job_id:heldManual.body.job_id})).toHaveLength(0);
+  });
+
+  it('sends individually written mail outside campaign hours and pacing while keeping automated work delayed',async()=>{
+    const first=await compose('first-person@example.test');expect(first.status).toBe(202);
+    await runWorker({budgetMs:20000,maxJobs:5,inboxOnly:true});expect(fake.sendMail).toHaveBeenCalledTimes(1);
+    const tomorrowWeekday=(new Date().getUTCDay()||7)%7+1;
+    const settings={...defaultSettings,paused:false,business_address:'123 Test St',timezone:'UTC',sending_days:[tomorrowWeekday],min_interval_seconds:86400};
+    await db('business_settings').where({id:'agency'}).update({data:JSON.stringify(settings)});
+    const second=await compose('second-person@example.test'),source=await insertInboxMessage();
+    const reply=await request(app).post(`/api/inbox/${source.id}/reply`).send({body_text:'A timely personal reply.'});expect(reply.status).toBe(202);
+    const campaignJob=await insertJob();await runWorker({budgetMs:20000,maxJobs:5,inboxOnly:true});
+    expect(fake.sendMail).toHaveBeenCalledTimes(3);expect((await db('jobs').where({id:second.body.job_id}).first()).status).toBe('completed');expect((await db('jobs').where({id:reply.body.job_id}).first()).status).toBe('completed');
+    expect(await reserveSend(await claimJob(uuid()))).toBeNull();expect((await db('jobs').where({id:campaignJob.id}).first()).last_error).toContain('sending window');
+    await db('business_settings').where({id:'agency'}).update({data:JSON.stringify({...settings,sending_days:[1,2,3,4,5,6,7],sending_start:'00:00',sending_end:'23:59'})});await db('jobs').where({id:campaignJob.id}).update({due_at:date()});
+    expect(await reserveSend(await claimJob(uuid()))).toBeNull();expect((await db('jobs').where({id:campaignJob.id}).first()).last_error).toContain('Minimum interval');
+  });
+
+  it('keeps the shared rolling sending cap for immediate manual mail',async()=>{
+    await db('business_settings').where({id:'agency'}).update({data:JSON.stringify({...defaultSettings,paused:false,application_cap:1})});
+    const first=await compose('capacity-first@example.test');expect(first.status).toBe(202);await runWorker({budgetMs:20000,maxJobs:5,inboxOnly:true});
+    const second=await compose('capacity-second@example.test');expect(second.status).toBe(202);await runWorker({budgetMs:20000,maxJobs:5,inboxOnly:true});
+    expect(fake.sendMail).toHaveBeenCalledTimes(1);expect(await db('send_attempts').where({job_id:second.body.job_id})).toHaveLength(0);expect((await db('jobs').where({id:second.body.job_id}).first()).last_error).toContain('capacity');
+  });
+
+  it('holds an unknown manual SMTP outcome instead of resubmitting on the next Inbox tick',async()=>{
+    const queued=await compose('unknown-outcome@example.test');expect(queued.status).toBe(202);fake.sendMail.mockRejectedValueOnce({code:'ETIMEDOUT',command:'DATA'});
+    await runWorker({budgetMs:20000,maxJobs:5,inboxOnly:true});await runWorker({budgetMs:20000,maxJobs:5,inboxOnly:true});
+    expect(fake.sendMail).toHaveBeenCalledTimes(1);expect((await db('jobs').where({id:queued.body.job_id}).first()).status).toBe('held');expect(await db('send_attempts').where({job_id:queued.body.job_id})).toMatchObject([{status:'unknown',retryable:0}]);
   });
 
   it('serializes capacity reservations across concurrent workers and mailboxes',async()=>{

@@ -27,13 +27,17 @@ function bounded<T>(promise:Promise<T>,deadline:number,abort?:()=>void,onLate?:(
 }
 
 /** MySQL 8 / MariaDB 10.11 SKIP LOCKED prevents two workers from claiming one job. */
-export async function claimJob(workerId:string,syncOnly=false) {
-  return db.transaction(async trx=>{
-    const query=trx('jobs').where({status:'queued'}).where('due_at','<=',now());if(syncOnly)query.where({kind:'sync'});
+export async function claimJob(workerId:string,syncOnly=false,inboxOnly=false) {
+  // InnoDB can still deadlock while updating a selected queue index row. This
+  // transaction has no network/submission side effects, so retry only the claim.
+  for(let retry=0;;retry++)try{return await db.transaction(async trx=>{
+    const query=trx('jobs').where({status:'queued'}).where('due_at','<=',now());
+    if(syncOnly)query.where({kind:'sync'});
+    else if(inboxOnly)query.where(function(){this.where({kind:'sync'}).orWhere(function(){this.where({kind:'send'}).whereRaw("JSON_TYPE(JSON_EXTRACT(payload, '$.is_manual')) = 'BOOLEAN' AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.is_manual')) = 'true'");});});
     const job=await query.orderByRaw("CASE WHEN kind = 'sync' THEN 0 ELSE 1 END").orderBy('due_at').forUpdate().skipLocked().first();if(!job)return null;
     await trx('jobs').where({id:job.id}).update({status:'leased',lease_owner:workerId,lease_until:new Date(Date.now()+leaseMs),updated_at:now()});
     return {...job,status:'leased',lease_owner:workerId,lease_until:new Date(Date.now()+leaseMs)};
-  });
+  });}catch(error){if((error as {code?:string}).code!=='ER_LOCK_DEADLOCK'||retry>=2)throw error;}
 }
 
 /** Reserved work can restart; any submission that may have reached SMTP is held. */
@@ -69,7 +73,9 @@ export async function requestSync(accountId:string) {
 
 async function queueDueSync(settings:any) {
   const accounts=await db('email_accounts').whereNotNull('imap_secret').whereNotNull('verified_at').whereIn('status',['active','paused','error']);
-  for(const account of accounts){const previous=await db('jobs').where({account_id:account.id,kind:'sync'}).orderBy('created_at','desc').first();if(!previous||new Date(previous.updated_at).getTime()<Date.now()-settings.poll_interval_seconds*1000)await requestSync(account.id);}
+  // Anchor cadence to when the scan was queued. Measuring from completion makes
+  // a one-minute cron miss every other tick after a scan takes a few seconds.
+  for(const account of accounts){const previous=await db('jobs').where({account_id:account.id,kind:'sync'}).orderBy('created_at','desc').first();if(!previous||new Date(previous.created_at).getTime()<=Date.now()-settings.poll_interval_seconds*1000)await requestSync(account.id);}
 }
 
 async function replyRecipientIssue(trx:Database,job:any,payload:any,contact:any):Promise<string|null> {
@@ -121,13 +127,15 @@ export async function reserveSend(claimed:any) {
     const settings=await getSettings(trx),account=await trx('email_accounts').where({id:job.account_id}).first(),payload=json(job.payload,{});
     const reason=await actualEligibility(trx,job,account,settings,payload);
     if(reason){if(/suppressed|consent|evidence|outreach|no longer exists|Enrollment|^(?:Reply|Manual) recipient|valid recipient/i.test(reason))return cancelJob(trx,job,reason);return delayJob(trx,job,reason,new Date(Date.now()+60000));}
-    const eligibleAt=nextSendingTime(now(),settings);if(eligibleAt.getTime()>Date.now()+1000)return delayJob(trx,job,'Outside the configured sending window',eligibleAt);
+    // Individually written Inbox mail is ready for the next worker tick. The
+    // campaign window and pacing apply only to automated/test campaign work.
+    if(payload.is_manual!==true){const eligibleAt=nextSendingTime(now(),settings);if(eligibleAt.getTime()>Date.now()+1000)return delayJob(trx,job,'Outside the configured sending window',eligibleAt);}
     const since=new Date(Date.now()-86400000);
     const capacity=()=>trx('send_attempts').whereIn('status',consumedStatuses).whereRaw('COALESCE(accepted_at, submitted_at, reserved_at) > ?',[since]);
     const total=Number((await capacity().count({count:'id'}).first())?.count||0),provider=Number((await capacity().where({account_id:account.id}).count({count:'id'}).first())?.count||0);
     if(total>=settings.application_cap||provider>=settings.provider_cap){const earliest=await capacity().min({oldest:trx.raw('COALESCE(accepted_at, submitted_at, reserved_at)')}).first();return delayJob(trx,job,'Rolling 24-hour sending capacity reached',new Date(Math.max(Date.now()+60000,new Date(earliest?.oldest as any).getTime()+86401000)));}
     const recent=await trx('send_attempts').where({account_id:account.id}).whereIn('status',consumedStatuses).orderByRaw('COALESCE(accepted_at, submitted_at, reserved_at) DESC').first();
-    const spaced=recent?new Date(new Date(recent.accepted_at||recent.submitted_at||recent.reserved_at).getTime()+settings.min_interval_seconds*1000):now();if(spaced>now())return delayJob(trx,job,'Minimum interval between messages',spaced);
+    const spaced=recent?new Date(new Date(recent.accepted_at||recent.submitted_at||recent.reserved_at).getTime()+settings.min_interval_seconds*1000):now();if(payload.is_manual!==true&&spaced>now())return delayJob(trx,job,'Minimum interval between messages',spaced);
     const enrollment=job.enrollment_id?await trx('enrollments').where({id:job.enrollment_id}).first():null,contact=payload.is_manual===true?await trx('contacts').where({email:payload.manual_recipient}).first():await trx('contacts').where({id:enrollment?.contact_id||payload.contact_id}).first();
     const recipient=payload.is_manual===true?payload.manual_recipient:payload.is_reply?payload.reply_recipient:contact.email;
     let content=payload.content,version:any=null;
@@ -149,9 +157,9 @@ export async function reserveSend(claimed:any) {
 async function markSubmitting(prepared:any) {
   return db.transaction(async trx=>{
     await trx('business_settings').where({id:'agency'}).forUpdate().first();
-    const job=await trx('jobs').where({id:prepared.job.id}).forUpdate().first(),settings=await getSettings(trx),account=await trx('email_accounts').where({id:prepared.account.id}).first();
-    let reason=job?.status!=='leased'||job.lease_owner!==prepared.job.lease_owner||new Date(job.lease_until)<=now()?'Job lease was cancelled or expired':await actualEligibility(trx,job,account,settings,json(job.payload,{}));
-    if(!reason&&nextSendingTime(now(),settings).getTime()>Date.now()+1000)reason='Sending window closed';
+    const job=await trx('jobs').where({id:prepared.job.id}).forUpdate().first(),settings=await getSettings(trx),account=await trx('email_accounts').where({id:prepared.account.id}).first(),payload=json(job?.payload,{});
+    let reason=job?.status!=='leased'||job.lease_owner!==prepared.job.lease_owner||new Date(job.lease_until)<=now()?'Job lease was cancelled or expired':await actualEligibility(trx,job,account,settings,payload);
+    if(!reason&&payload.is_manual!==true&&nextSendingTime(now(),settings).getTime()>Date.now()+1000)reason='Sending window closed';
     if(reason){await trx('send_attempts').where({id:prepared.attempt.id}).update({status:'cancelled',retryable:false,error_message:reason});await recordOutcome(trx,prepared.attempt.id,'cancelled','ELIGIBILITY_CHANGED',reason);if(job?.status==='leased'){if(/^(?:Reply|Manual) recipient|suppressed|consent|valid recipient/i.test(reason))await cancelJob(trx,job,reason);else await delayJob(trx,job,reason);}return false;}
     await trx('send_attempts').where({id:prepared.attempt.id,status:'reserved'}).update({status:'submitting',submitted_at:now()});return true;
   });
@@ -234,7 +242,7 @@ export async function reconcileAttempt(attemptId:string,resolution:'accepted'|'n
   });
 }
 
-export async function runWorker(options:{budgetMs?:number;maxJobs?:number;syncOnly?:boolean}={}) {
+export async function runWorker(options:{budgetMs?:number;maxJobs?:number;syncOnly?:boolean;inboxOnly?:boolean}={}) {
   const workerId=randomUUID(),deadline=Date.now()+Math.min(20000,Math.max(1000,options.budgetMs||15000));let processed=0;
   await db('worker_state').where({id:'scheduler'}).update({last_heartbeat:now(),last_error:null,updated_at:now()});
   await recoverExpiredLeases();const settings=await getSettings();await queueDueSync(settings);
@@ -242,7 +250,7 @@ export async function runWorker(options:{budgetMs?:number;maxJobs?:number;syncOn
   // versions and delivery history are retained for safety and auditability.
   await db('tracking_events').whereIn('kind',['open','click']).where('created_at','<',new Date(Date.now()-settings.retention_days*86400000)).delete();
   while(processed<Math.min(25,options.maxJobs||5)&&Date.now()<deadline-8000){
-    const job=await claimJob(workerId,!!options.syncOnly);if(!job)break;
+    const job=await claimJob(workerId,!!options.syncOnly,!!options.inboxOnly);if(!job)break;
     try{
       if(job.kind==='sync'){
         const account=await db('email_accounts').where({id:job.account_id}).first(),result=await syncMailbox(account,{deadline,maxMessages:50});

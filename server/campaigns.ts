@@ -1,12 +1,13 @@
 import { Router } from './http.js';
 import { z } from 'zod';
 import { db, json, type Database } from './db.js';
-import { requireUser, permit } from './auth.js';
+import { requireUser, permit, consumeRateLimit } from './auth.js';
 import { HttpError, id, audit, normalizeEmail } from './lib/util.js';
 import { getSettings } from './settings.js';
 import { renderStep, sanitizeEmail, followupTime, nextSendingTime } from './engine/content.js';
 import { contactEligibility, manualRecipientEligibility, stopContact } from './engine/policy.js';
 import { prepareMarketing } from './tracking.js';
+import { runWorker } from './worker.js';
 
 const stepSchema = z.object({subject:z.string().min(1).max(998).refine(s=>!/[\r\n]/.test(s),'Subject must be one line'),body_text:z.string().min(1).max(100000),body_html:z.string().max(200000).nullable().optional(),delay_days:z.number().int().min(0).max(365).default(0)});
 const draftSchema = z.object({name:z.string().trim().min(1).max(200),account_id:z.string().uuid(),steps:z.array(stepSchema).min(1).max(10),contact_ids:z.array(z.string().uuid()).max(10000).default([]),open_tracking:z.boolean().default(false),click_tracking:z.boolean().default(false),scheduled_at:z.string().datetime({offset:true}).nullable().optional()});
@@ -148,7 +149,29 @@ templateRouter.post('/:id/archive',permit('campaigns:write'),async(req,res)=>{if
 templateRouter.post('/:id/preview',async(req,res)=>{const template=await db('templates').where({id:req.params.id}).first();if(!template)throw new HttpError(404,'Template not found.');const body=z.object({contact_id:z.string().uuid()}).parse(req.body);const contact=await db('contacts').where({id:body.contact_id}).first();if(!contact)throw new HttpError(404,'Contact not found.');try{res.json(renderStep(template,parseContact(contact)));}catch(error){throw new HttpError(400,(error as Error).message);}});
 
 export const inboxRouter=Router();inboxRouter.use(requireUser);
-inboxRouter.get('/',async(req,res)=>{const filters=z.object({classification:z.enum(['human_reply','automatic','delivery_failure','unmatched','uncertain','outbound']).optional(),account_id:z.string().uuid().optional()}).parse(req.query);const query=db('messages').orderBy('received_at','desc').limit(200);if(filters.classification)query.where({classification:filters.classification});if(filters.account_id)query.where({account_id:filters.account_id});res.json({items:await query.select('id','account_id','contact_id','campaign_id','direction','from_email','to_email','subject','classification','assigned_to','received_at')});});
+inboxRouter.post('/process',permit('inbox:write'),async(req,res)=>{
+  const command=z.object({mode:z.enum(['sync','inbox']).default('inbox')}).strict().parse(req.body||{});
+  await consumeRateLimit('inbox-process:'+req.user!.id,20,60000);
+  res.json(await runWorker({budgetMs:18000,maxJobs:10,syncOnly:command.mode==='sync',inboxOnly:true}));
+});
+async function withDeliveryStatus(messages:any[]) {
+  const ids=messages.filter(m=>m.direction==='outbound'&&m.attempt_id).map(m=>m.attempt_id);
+  const attempts=ids.length?await db('send_attempts as a').leftJoin('jobs as j','j.id','a.job_id').whereIn('a.id',ids).select('a.id','a.status','a.accepted_at','j.status as job_status'):[];
+  const byId=new Map(attempts.map(a=>[a.id,a]));
+  return messages.map(message=>{
+    const attempt=byId.get(message.attempt_id);
+    const send_status=!attempt?null:attempt.status==='accepted'?'accepted':['unknown','submitting'].includes(attempt.status)?(attempt.status==='unknown'?'held':'sending'):attempt.job_status==='leased'?'sending':attempt.job_status;
+    return {...message,...(message.direction==='outbound'?{send_status,accepted_at:attempt?.accepted_at||null}:{})};
+  });
+}
+inboxRouter.get('/',async(req,res)=>{const filters=z.object({classification:z.enum(['human_reply','automatic','delivery_failure','unmatched','uncertain','outbound']).optional(),account_id:z.string().uuid().optional()}).parse(req.query);const query=db('messages').orderBy('received_at','desc').limit(200);if(filters.classification)query.where({classification:filters.classification});if(filters.account_id)query.where({account_id:filters.account_id});res.json({items:await withDeliveryStatus(await query.select('id','attempt_id','account_id','contact_id','campaign_id','direction','from_email','to_email','subject','classification','assigned_to','received_at'))});});
+inboxRouter.get('/outbox',async(req,res)=>{
+  const filters=z.object({account_id:z.string().uuid().optional()}).parse(req.query);
+  const query=db('jobs').where({kind:'send'}).whereIn('status',['queued','leased','held','failed']).whereRaw("JSON_TYPE(JSON_EXTRACT(payload, '$.is_manual')) = 'BOOLEAN' AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.is_manual')) = 'true'").orderBy('created_at','desc').limit(50);
+  if(filters.account_id)query.where('account_id',filters.account_id);
+  const rows=await query.select('id','account_id','status','last_error','created_at','updated_at','payload');
+  res.json({items:rows.map(({payload,...row})=>{const data=json<any>(payload,{});return {...row,recipient:data.manual_recipient,subject:data.content?.subject||'',status:row.status==='leased'?'sending':row.status};})});
+});
 inboxRouter.post('/compose',permit('inbox:write'),async(req,res)=>{
   const body=z.object({account_id:z.string().uuid(),to:z.string().trim().email().max(254).transform(normalizeEmail),subject:stepSchema.shape.subject.transform(s=>s.trim()).refine(s=>s.length>0,'Enter a subject'),body_text:z.string().trim().min(1).max(100000)}).strict().parse(req.body),jobId=id();
   await db.transaction(async trx=>{
@@ -164,7 +187,8 @@ inboxRouter.get('/:id',async(req,res)=>{
   const message=await db('messages').where({id:req.params.id}).first();if(!message)throw new HttpError(404,'Message not found.');
   const participant=normalizeEmail(message.direction==='inbound'?message.from_email:message.to_email);
   const thread=await db('messages').where({account_id:message.account_id}).where(builder=>builder.where(inner=>inner.where({direction:'inbound'}).whereRaw('LOWER(TRIM(from_email)) = ?',[participant])).orWhere(inner=>inner.where({direction:'outbound'}).whereRaw('LOWER(TRIM(to_email)) = ?',[participant]))).orderBy('received_at');
-  res.json({...message,body_html:message.body_html?sanitizeEmail(message.body_html):null,references_json:json(message.references_json,[]),thread:thread.map(m=>({...m,body_html:m.body_html?sanitizeEmail(m.body_html):null})),contact:await db('contacts').where({email:participant}).first()||null});
+  const [delivery]=await withDeliveryStatus([message]);
+  res.json({...delivery,body_html:message.body_html?sanitizeEmail(message.body_html):null,references_json:json(message.references_json,[]),thread:(await withDeliveryStatus(thread)).map(m=>({...m,body_html:m.body_html?sanitizeEmail(m.body_html):null})),contact:await db('contacts').where({email:participant}).first()||null});
 });
 inboxRouter.patch('/:id',permit('inbox:write'),async(req,res)=>{
   const body=z.object({contact_id:z.string().uuid().nullable().optional(),assigned_to:z.string().uuid().nullable().optional()}).parse(req.body);

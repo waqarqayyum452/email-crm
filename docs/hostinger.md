@@ -1,6 +1,6 @@
-# Hostinger verification and future deployment
+# Hostinger deployment and verification
 
-No deployment, DNS change, or live mail is authorized by this repository. Perform the following read-only checks locally or in an explicitly authorized private hosting test first. Leave sending disabled until the separate controlled-mail authorization/checklist is complete. No alternate provider is selected automatically.
+Deployment, DNS changes and live mail require explicit owner authorization. Keep credentials private and preserve the mailbox encryption key during transfers. No alternate provider is selected automatically.
 
 ## What the documentation proves
 
@@ -80,3 +80,11 @@ exec /verified/path/to/node scripts/scheduler-call.mjs
 `SCHEDULER_BASE_URL` points to the app HTTPS origin. `SCHEDULER_SECRET` comes from a private environment/`.env`. Alternatively, `node scripts/scheduler-call.mjs --secret-stdin < /absolute/private/scheduler-secret` reads a restricted secret file; the path contains no secret. Set private file permissions (for example 0600) and ensure it is outside public content. The runner rejects insecure non-loopback HTTP, does not follow redirects, times out at 25 seconds, does not retry internally, and prints only status/timing. Ensure upstream logging redacts `Authorization`; do not use `curl -v`, query-string tokens, URL userinfo, or an inline token in a cron command. A later cron tick can safely inspect leases; it must never force-resend an unknown attempt.
 
 If neither mechanism executes reliably under the current plan, scheduled sending is blocked. Document the exact unavailable capability and review a compatible no-recurring-cost scheduling arrangement with the owner; do not silently switch hosting or add a paid scheduler.
+
+## Automatic live Inbox
+
+The Inbox refreshes its list, Outbox and selected conversation every 10 seconds while visible, retaining reply drafts across refresh failures. A compose/reply queues durable work and requests an immediate bounded Inbox worker. A server cron is still required to receive mail and finish pending work when the browser is closed. Incoming mail normally appears within about one minute plus the screen refresh; this is polling, not guaranteed instant IMAP push. Manually written messages skip campaign business hours and campaign pacing, while live/global pause, validated mailbox, fresh sync, exact-recipient suppression/revocation, rolling capacity and unknown-acceptance holds remain. Campaign timings are unchanged.
+
+The optional Hostinger installer uses NODE_ENV=production, HOSTINGER_ACCOUNT and HOSTINGER_SCHEDULER_DIR. The latter must exactly equal /home/<account>/domains/<APP_URL hostname>/.email-crm-scheduler. An authenticated scheduler install action writes tick.php and scheduler.json there with directory0700/files0600, outside public_html and rotating build directories. The PHP CLI wrapper reads the private secret, takes a nonblocking lock and sends a certificate-verified HTTPS POST with mode=inbox. It refuses redirects and times out after25seconds, printing only safe status/timing/counters. The cron command contains only `/usr/bin/php /home/<account>/domains/<domain>/.email-crm-scheduler/tick.php`, scheduled `* * * * *`. Confirm actual execution and three advancing receiving heartbeats before considering it operational. [Hostinger PHP cron format](https://www.hostinger.com/support/5646919-how-to-set-up-a-cron-job-with-special-characters-at-hostinger/).
+
+With live sending disabled, use scheduler action=status for private counters, action=install for the fixed installer, and mode=sync for a receiving-only test. For an explicitly authorized Inbox cutover, set LIVE_SEND_ENABLED=true and call action=activate-inbox once. This atomic operation refuses active sending leases, holds existing queued sends for review, sets receiving interval60 and unpauses outgoing mail. It does not send or release old messages; repeating it does not disturb new jobs. The installed cron claims only sync and manually written Inbox jobs, never campaign/test jobs. Review campaign automation separately. Unknown SMTP acceptance always needs manual reconciliation.

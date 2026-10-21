@@ -116,3 +116,9 @@ The first part is local and sends nothing:
 8. Add a second authorized mailbox, validate it, and make it default. Verify a new draft selects it while the original conversation retains the old sender. Restore both gates to a paused/disabled state after testing unless ongoing operation is explicitly authorized.
 
 Before production release also complete the [Hostinger evidence record](hostinger.md) and an isolated [restore rehearsal](operations.md). Keep sanitized screenshots/evidence privately; do not collect passwords, tokens, raw personal inbox contents or secret-bearing logs.
+
+## Live Inbox verification (2026-10-21)
+
+The final isolated suite passes149tests across13files on MariaDB11.4.8/port3308 with fake mail transports. New checks cover60-second sync cadence, overlapping sync deduplication, Inbox-only claims, manual mail outside campaign hours/pacing with actual delivery gates preserved, pre-submission claim deadlock recovery, atomic/idempotent live cutover including claim races, authenticated processing with CSRF/permissions, strict scheduler actions, status/body redaction, delivery states and private scheduler filesystem protections. No suite submits live mail. Production build/typechecks pass.
+
+The production browser walkthrough passes15checks, including automatic incoming message updates in both list and selected conversation, draft preservation across a temporary503, hidden-page polling suspension, focus/online recovery without overlap, and accurate Outbox state. It runs on an isolated local _ui_test database with live sending disabled and no real mailbox credentials. Screenshots were inspected.

@@ -3,17 +3,39 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { CheckCircle2, Mail, MessageCircle, PenSquare, RefreshCw, Search, Send, ShieldCheck } from 'lucide-react';
-import { body, date, initials, list, patch, useResource, type Row } from '../api';
+import { api, body, date, initials, list, patch, useResource, type Row } from '../api';
 import { useWorkspace } from '../context';
-import { Button, Empty, Field, FormError, HtmlPreview, Modal, PageHeader, Panel, Resource, Status } from '../ui';
+import { Badge, Button, Empty, Field, FormError, HtmlPreview, Modal, PageHeader, Panel, Resource, Status } from '../ui';
 
 const validEmail = (value: string) => /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(value) && value.length <= 254;
 const readyMailbox = (account: Row) => account.status === 'active' && Boolean(account.verified_at);
 const participant = (message: Row) => String(message.direction === 'outbound' ? message.to_email || '' : message.from_email || '').trim().toLowerCase();
 const messageStatus = (message: Row) => message.classification && !['unmatched', 'outbound'].includes(message.classification) ? message.classification : message.direction === 'outbound' ? 'outgoing' : 'incoming';
+const liveInbox = { pollIntervalMs: 10000, refreshOnFocus: true, keepPreviousData: true };
+const liveMailboxes = { pollIntervalMs: 30000, refreshOnFocus: true, keepPreviousData: true };
+const sendingStates: Record<string, { label: string; tone: string }> = {
+  accepted: { label: 'Sent to mail server', tone: 'green' },
+  sending: { label: 'Sending', tone: 'blue' }, submitting: { label: 'Sending', tone: 'blue' }, leased: { label: 'Processing', tone: 'blue' },
+  reserved: { label: 'Preparing to send', tone: 'blue' }, queued: { label: 'Queued', tone: 'blue' },
+  held: { label: 'Needs review', tone: 'amber' }, unknown: { label: 'Needs review', tone: 'amber' },
+  failed: { label: 'Sending failed', tone: 'red' }, cancelled: { label: 'Cancelled', tone: 'amber' },
+};
+function SendStatus({ value }: { value: string }) {
+  const state = sendingStates[value];
+  return state ? <Badge tone={state.tone}>{state.label}</Badge> : <Status value={value} />;
+}
+function MessageStatus({ message }: { message: Row }) {
+  return message.direction === 'outbound' && message.send_status ? <SendStatus value={message.send_status} /> : <Status value={messageStatus(message)} />;
+}
+function processInbox(mode: 'inbox' | 'sync', refresh: () => void, notify: (message: string, error?: boolean) => void) {
+  void api('/inbox/process', body({ mode })).then(refresh).catch(() => {
+    notify(mode === 'sync' ? 'Mailbox check remains queued for the next automatic sync.' : 'Your message is kept in Outbox. Automatic processing will try it when eligible.');
+    refresh();
+  });
+}
 
 export function InboxPage({ messageId = '' }: { messageId?: string }) {
-  const { revision, accounts, can, act } = useWorkspace();
+  const { revision, accounts, can, act, notify, refresh } = useWorkspace();
   const [classification, setClassification] = useState('');
   const [account, setAccount] = useState('');
   const [search, setSearch] = useState('');
@@ -21,8 +43,12 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
   const [busy, setBusy] = useState(false);
   const [composing, setComposing] = useState(false);
   const query = new URLSearchParams({ ...(classification ? { classification } : {}), ...(account ? { account_id: account } : {}) });
-  const resource = useResource(`/inbox?${query}`, revision);
+  const resource = useResource(`/inbox?${query}`, revision, liveInbox);
+  const outbox = useResource('/inbox/outbox', revision, liveInbox);
+  const mailboxResource = useResource('/accounts', revision, liveMailboxes);
+  const currentAccounts = mailboxResource.data ? list(mailboxResource.data) : accounts;
   const rows = list(resource.data).filter(m => `${m.from_email} ${m.subject} ${m.to_email}`.toLowerCase().includes(search.toLowerCase()));
+  const pending = list(outbox.data).filter(job => (!account || job.account_id === account) && `${job.recipient} ${job.subject}`.toLowerCase().includes(search.toLowerCase()));
 
   return <>
     <PageHeader eyebrow="THE CONVERSATION CONTINUES" title="Inbox" description="Read, reply, and start a new conversation." actions={<>
@@ -31,26 +57,27 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
         try {
           const targets = account ? accounts.filter(a => a.id === account) : accounts;
           for (const a of targets) await act(`/accounts/${a.id}/sync`, body({}));
-          if (targets.length) resource.reload();
+          if (targets.length) { resource.reload(); notify('Mailbox check requested. New messages will appear automatically after syncing.'); if (can('inbox:write')) processInbox('sync', refresh, notify); }
         } catch {} finally { setBusy(false); }
       }}><RefreshCw size={16} />Sync inbox</Button>}
       {can('inbox:write') && <Button onClick={() => setComposing(true)}><PenSquare size={16} />New message</Button>}
     </>} />
-    <div className="inbox-sync-note"><span className="tiny-dot" /><span>Last sync: {date(accounts.filter(a => !account || a.id === account).map(a => a.last_successful_sync_at).filter(Boolean).sort().at(-1), true)}</span><span>Remote images are blocked in message previews.</span></div>
+    <div className="inbox-sync-note"><span className="tiny-dot" /><span>Last sync: {date(currentAccounts.filter(a => !account || a.id === account).map(a => a.last_successful_sync_at).filter(Boolean).sort().at(-1), true)}</span><span>Refreshes automatically every 10 seconds.</span><span>Remote images are blocked in message previews.</span></div>
+    {(resource.refreshError || outbox.error || outbox.refreshError || mailboxResource.error || mailboxResource.refreshError) && <p className="panel-note" role="status">Live updates are temporarily unavailable. Retrying automatically; your messages and drafts are kept.</p>}
     <Panel className="inbox-panel">
       <div className="inbox-toolbar">
         <div className="search-field"><Search size={17} /><input aria-label="Search conversations" placeholder="Search conversations…" value={search} onChange={e => setSearch(e.target.value)} /></div>
         <div className="filters">
-          <select aria-label="Conversation classification" value={classification} onChange={e => setClassification(e.target.value)}><option value="">All conversations</option><option value="outbound">Sent</option><option value="human_reply">Human replies</option><option value="automatic">Automatic replies</option><option value="delivery_failure">Delivery failures</option><option value="unmatched">New messages</option><option value="uncertain">Needs review</option></select>
+          <select aria-label="Conversation classification" value={classification} onChange={e => setClassification(e.target.value)}><option value="">All conversations</option><option value="outbound">Outgoing</option><option value="human_reply">Human replies</option><option value="automatic">Automatic replies</option><option value="delivery_failure">Delivery failures</option><option value="unmatched">New messages</option><option value="uncertain">Needs review</option></select>
           <select aria-label="Inbox mailbox" value={account} onChange={e => setAccount(e.target.value)}><option value="">All mailboxes</option>{accounts.map(a => <option value={a.id} key={a.id}>{a.label} · {a.email}</option>)}</select>
         </div>
       </div>
       <div className="inbox-layout">
-        <aside className="conversation-list"><Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => <Link className={`conversation-item ${selected === m.id ? 'active' : ''}`} key={m.id} href={`/inbox/${m.id}`} scroll={false} aria-current={selected === m.id ? 'page' : undefined}>
-          <div className="conversation-top"><span className="avatar contact-avatar">{initials(participant(m) || 'Mail')}</span><strong>{m.direction === 'outbound' ? m.to_email : m.from_name || m.from_email || 'Message'}</strong><time>{date(m.received_at || m.created_at, true)}</time></div>
-          <h3>{m.subject || '(No subject)'}</h3><p>{m.body_text?.slice(0, 100) || 'Open to read this message.'}</p><Status value={messageStatus(m)} />
+        <aside className="conversation-list">{pending.length > 0 && (!classification || classification === 'outbound') && <section aria-label="Outbox"><div className="panel-heading"><div><h2>Outbox</h2><p>Messages waiting to send or needing attention.</p></div></div>{pending.map(job => <div className="conversation-item" key={job.id}><div className="conversation-top"><strong>{job.recipient}</strong><time>{date(job.updated_at || job.created_at, true)}</time></div><h3>{job.subject || '(No subject)'}</h3>{job.last_error && <p>{job.last_error}</p>}<SendStatus value={job.status} />{['held', 'failed'].includes(job.status) && can('system:write') && <p><Link href="/health">Review in System health</Link></p>}</div>)}</section>}<Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => <Link className={`conversation-item ${selected === m.id ? 'active' : ''}`} key={m.id} href={`/inbox/${m.id}`} scroll={false} aria-current={selected === m.id ? 'page' : undefined}>
+          <div className="conversation-top"><span className="avatar contact-avatar">{initials(participant(m) || 'Mail')}</span><strong>{m.direction === 'outbound' ? m.to_email : m.from_name || m.from_email || 'Message'}</strong><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time></div>
+          <h3>{m.subject || '(No subject)'}</h3><p>{m.body_text?.slice(0, 100) || 'Open to read this message.'}</p><MessageStatus message={m} />
         </Link>) : <Empty title="A little quiet, for now." description="Synced messages and your conversations will appear here." />}</Resource></aside>
-        <section className="conversation-detail">{selected ? <Conversation key={selected} id={selected} /> : <div className="inbox-welcome">
+        <section className="conversation-detail">{selected ? <Conversation key={selected} id={selected} accounts={currentAccounts} /> : <div className="inbox-welcome">
           <div className="inbox-welcome-art"><MessageCircle size={36} /><Mail size={23} /></div><h2>Good conversations live here.</h2><p>Select a message to read and reply, or choose New message to start a conversation.</p><div><ShieldCheck size={16} />Human replies stop automated follow-ups.</div>
         </div>}</section>
       </div>
@@ -60,7 +87,7 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
 }
 
 function NewMessage({ selectedAccount, onClose }: { selectedAccount: string; onClose: () => void }) {
-  const { accounts, can, act } = useWorkspace();
+  const { accounts, can, act, refresh, notify } = useWorkspace();
   const mailboxes = accounts.filter(readyMailbox);
   const preferredAccount = mailboxes.find(a => a.id === selectedAccount) || mailboxes.find(a => Number(a.is_default) === 1) || mailboxes[0];
   const [account, setAccount] = useState<string>(preferredAccount?.id || '');
@@ -81,8 +108,9 @@ function NewMessage({ selectedAccount, onClose }: { selectedAccount: string; onC
       if (!selectedMailbox || !validEmail(to.trim())) return;
       setBusy(true); setError('');
       try {
-        await act('/inbox/compose', body({ account_id: account, to: to.trim(), subject: subject.trim(), body_text: message }), `Message queued for ${to.trim()}. It will appear in the conversation after sending.`);
+        await act('/inbox/compose', body({ account_id: account, to: to.trim(), subject: subject.trim(), body_text: message }), `Message added to Outbox for ${to.trim()}. Its sending status updates automatically.`);
         onClose();
+        processInbox('inbox', refresh, notify);
       } catch (err: any) { setError(err.message); } finally { setBusy(false); }
     }}>
       <Field label="From mailbox"><select required value={account} disabled={busy} onChange={e => setAccount(e.target.value)}>{mailboxes.map(a => <option key={a.id} value={a.id}>{a.label} · {a.email}</option>)}</select></Field>
@@ -95,9 +123,9 @@ function NewMessage({ selectedAccount, onClose }: { selectedAccount: string; onC
   </Modal>;
 }
 
-function Conversation({ id }: { id: string }) {
-  const { revision, users, accounts, can, act } = useWorkspace();
-  const resource = useResource(`/inbox/${id}`, revision);
+function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
+  const { revision, users, can, act, refresh, notify } = useWorkspace();
+  const resource = useResource(`/inbox/${id}`, revision, liveInbox);
   const data = resource.data || {};
   const message = data.message || data;
   const thread = data.thread?.length ? data.thread : [message];
@@ -110,15 +138,16 @@ function Conversation({ id }: { id: string }) {
   const contactMatchesRecipient = Boolean(replyRecipient && data.contact && message.contact_id === data.contact.id && String(data.contact.email || '').trim().toLowerCase() === replyRecipient);
 
   return <Resource {...resource} retry={resource.reload}>
+    {resource.refreshError && <p className="panel-note" role="status">This conversation could not refresh. Retrying automatically; your reply draft is kept.</p>}
     <div className="conversation-heading">
-      <h2>{message.subject || '(No subject)'}</h2><div><Status value={messageStatus(message)} /></div>
+      <h2>{message.subject || '(No subject)'}</h2><div><MessageStatus message={message} /></div>
       <p>Mailbox: {mailbox?.email || (message.direction === 'outbound' ? message.from_email : message.to_email)}</p>
       <p>Conversation with: <strong>{replyRecipient || 'No reply address available'}</strong></p>
       {can('inbox:write') && <div className="conversation-management"><Field label="Assigned teammate"><select value={message.assigned_to || ''} onChange={e => { act(`/inbox/${id}`, patch({ assigned_to: e.target.value || null }), 'Conversation assignment updated.').catch(() => {}); }}><option value="">Unassigned</option>{users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select></Field></div>}
     </div>
     {message.campaign_id && contactMatchesRecipient && <ReviewReply message={message} />}
     <div className="thread-messages">{thread.map((m: Row, i: number) => <article className={`thread-message ${m.direction === 'outbound' ? 'outbound' : ''}`} key={m.id || i}>
-      <div className="thread-message-heading"><span className="avatar avatar-small">{initials(m.from_name || m.from_email || 'SD')}</span><div><strong>{m.from_name || m.from_email || 'Agency mailbox'}</strong><small>To {m.to_email || 'recipient'}</small></div><time>{date(m.received_at || m.created_at, true)}</time></div>
+      <div className="thread-message-heading"><span className="avatar avatar-small">{initials(m.from_name || m.from_email || 'SD')}</span><div><strong>{m.from_name || m.from_email || 'Agency mailbox'}</strong><small>To {m.to_email || 'recipient'}</small>{m.direction === 'outbound' && <small><MessageStatus message={m} /></small>}</div><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time></div>
       <HtmlPreview html={m.body_html || m.html} text={m.body_text || m.text} />
     </article>)}</div>
     {can('inbox:write') && <form className="reply-composer" onSubmit={async e => {
@@ -127,13 +156,14 @@ function Conversation({ id }: { id: string }) {
       setBusy(true); setError(''); setQueued('');
       try {
         await act(`/inbox/${id}/reply`, body({ body_text: reply }));
-        setQueued(`Reply queued for ${replyRecipient}. It will appear in this conversation after sending.`);
+        setQueued(`Reply added to Outbox for ${replyRecipient}. Its sending status updates automatically.`);
         setReply('');
+        processInbox('inbox', refresh, notify);
       } catch (err: any) { setError(err.message); } finally { setBusy(false); }
     }}>
       <h3><Send size={16} />Write a reply</h3><p>Reply to <strong>{replyRecipient || 'No reply address available'}</strong>{mailbox?.email ? <> from <strong>{mailbox.email}</strong></> : ''}.</p>
       <textarea aria-label="Reply message" rows={5} required maxLength={100000} disabled={busy || !validEmail(replyRecipient)} value={reply} onChange={e => setReply(e.target.value)} placeholder="Keep the conversation going…" />
-      <div className="reply-footer"><span>Your reply will be queued for the original mailbox.</span><Button type="submit" busy={busy} disabled={!message.id || !validEmail(replyRecipient) || !reply.trim()}><Send size={15} />Queue reply</Button></div>
+      <div className="reply-footer"><span>Sending status updates automatically in Outbox.</span><Button type="submit" busy={busy} disabled={!message.id || !validEmail(replyRecipient) || !reply.trim()}><Send size={15} />Queue reply</Button></div>
       {!validEmail(replyRecipient) && <FormError error="This message has no valid reply address. Use New message to write to an email address." />}
       {queued && <div className="inbox-queue-confirmation" role="status"><CheckCircle2 size={16} /><span>{queued}</span></div>}
       <FormError error={error} />

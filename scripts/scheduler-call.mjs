@@ -4,10 +4,10 @@ import process from 'node:process';
 // No command-line secret or URL token: cron may expose arguments and URLs.
 const flags = process.argv.slice(2);
 if (flags.includes('--help')) {
-  console.log('Usage: node scripts/scheduler-call.mjs [--secret-stdin]\nSet SCHEDULER_BASE_URL (or APP_URL) and SCHEDULER_SECRET privately in the environment, or pipe the secret on stdin.');
+  console.log('Usage: node scripts/scheduler-call.mjs [--secret-stdin] [--sync-only|--inbox-only]\nSet SCHEDULER_BASE_URL (or APP_URL) and SCHEDULER_SECRET privately in the environment, or pipe the secret on stdin.');
   process.exit(0);
 }
-if (flags.some((flag) => flag !== '--secret-stdin') || flags.length > 1) {
+if (flags.some((flag) => !['--secret-stdin','--sync-only','--inbox-only'].includes(flag)) || new Set(flags).size!==flags.length || (flags.includes('--sync-only')&&flags.includes('--inbox-only'))) {
   console.error('Invalid arguments. Use --help. Never supply secrets as arguments.');
   process.exit(2);
 }
@@ -34,7 +34,7 @@ try {
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
-    body: '{}',
+    body: JSON.stringify({mode:flags.includes('--sync-only')?'sync':flags.includes('--inbox-only')?'inbox':'all'}),
     redirect: 'manual',
     signal: AbortSignal.timeout(25_000),
   });

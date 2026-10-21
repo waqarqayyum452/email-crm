@@ -6,7 +6,7 @@ import { AlertCircle, ArrowRight, Check, ChevronRight, Inbox, LoaderCircle, X } 
 import { date, type Row } from './api';
 
 export function Button({ children, variant = 'primary', busy, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger'; busy?: boolean }) {
-  return <button {...props} className={`button ${variant} ${props.className || ''}`} disabled={props.disabled || busy}>{busy && <LoaderCircle size={16} className="spin" />}{children}</button>;
+  return <button {...props} className={`button ${variant} ${props.className || ''}`} aria-busy={busy || undefined} disabled={props.disabled || busy}>{busy && <LoaderCircle size={16} className="spin" />}{children}</button>;
 }
 export function Badge({ children, tone = '' }: { children: ReactNode; tone?: string }) { return <span className={`badge ${tone}`}>{children}</span>; }
 export function Status({ value }: { value: any }) {

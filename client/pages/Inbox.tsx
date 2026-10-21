@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { CheckCircle2, Mail, MessageCircle, PenSquare, RefreshCw, Search, Send, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, ChevronDown, Mail, MessageCircle, PenSquare, RefreshCw, Search, Send, ShieldCheck } from 'lucide-react';
 import { api, body, date, initials, list, patch, useResource, type Row } from '../api';
 import { useWorkspace } from '../context';
 import { Badge, Button, Empty, Field, FormError, HtmlPreview, Modal, PageHeader, Panel, Resource, Status } from '../ui';
@@ -73,7 +73,7 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
         </div>
       </div>
       <div className="inbox-layout">
-        <aside className="conversation-list">{pending.length > 0 && (!classification || classification === 'outbound') && <section aria-label="Outbox"><div className="panel-heading"><div><h2>Outbox</h2><p>Messages waiting to send or needing attention.</p></div></div>{pending.map(job => <div className="conversation-item" key={job.id}><div className="conversation-top"><strong>{job.recipient}</strong><time>{date(job.updated_at || job.created_at, true)}</time></div><h3>{job.subject || '(No subject)'}</h3>{job.last_error && <p>{job.last_error}</p>}<SendStatus value={job.status} />{['held', 'failed'].includes(job.status) && can('system:write') && <p><Link href="/health">Review in System health</Link></p>}</div>)}</section>}<Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => <Link className={`conversation-item ${selected === m.id ? 'active' : ''}`} key={m.id} href={`/inbox/${m.id}`} scroll={false} aria-current={selected === m.id ? 'page' : undefined}>
+        <aside className="conversation-list">{pending.length > 0 && (!classification || classification === 'outbound') && <section aria-label="Outbox"><details className="inbox-outbox"><summary><div><strong>Outbox</strong><p>Sending progress and messages needing attention</p></div><Badge>{pending.length}</Badge><ChevronDown size={17} /></summary><div className="outbox-items">{pending.map(job => <div className="conversation-item" key={job.id}><div className="conversation-top"><strong>{job.recipient}</strong><time>{date(job.updated_at || job.created_at, true)}</time></div><h3>{job.subject || '(No subject)'}</h3>{job.last_error && <p>{job.last_error}</p>}<SendStatus value={job.status} />{['held', 'failed'].includes(job.status) && can('system:write') && <p><Link href="/health">Review in System health</Link></p>}</div>)}</div></details></section>}<Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => <Link className={`conversation-item ${selected === m.id ? 'active' : ''}`} key={m.id} href={`/inbox/${m.id}`} scroll={false} aria-current={selected === m.id ? 'page' : undefined}>
           <div className="conversation-top"><span className="avatar contact-avatar">{initials(participant(m) || 'Mail')}</span><strong>{m.direction === 'outbound' ? m.to_email : m.from_name || m.from_email || 'Message'}</strong><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time></div>
           <h3>{m.subject || '(No subject)'}</h3><p>{m.body_text?.slice(0, 100) || 'Open to read this message.'}</p><MessageStatus message={m} />
         </Link>) : <Empty title="A little quiet, for now." description="Synced messages and your conversations will appear here." />}</Resource></aside>

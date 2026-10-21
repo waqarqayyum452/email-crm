@@ -177,6 +177,8 @@ try {
     expect(await db('send_attempts')).toHaveLength(0);
   });
   await check('Owner signs in with session and CSRF', async () => {
+    await page.evaluate(() => document.fonts.ready);
+    await page.screenshot({ path: path.join(artifacts, 'crm-login-modern.png'), fullPage: true });
     await page.getByLabel('Email address', { exact: true }).fill(ownerEmail);
     await page.getByLabel('Password', { exact: true }).fill(password);
     await mutate(page, 'POST', '/auth/login', () => page.getByRole('button', { name: 'Sign in to workspace' }).click());
@@ -312,7 +314,12 @@ try {
     expect(job.account_id).toBe(composeMailboxId); expect(job.status).toBe('queued');
     expect(await db('contacts').where({ email: recipient })).toHaveLength(0);
     expect(await db('send_attempts')).toHaveLength(0);
-    await expect(page.getByRole('region', { name: 'Outbox', exact: true }).getByText('Browser QA personal message', { exact: true })).toBeVisible();
+    const outbox = page.getByRole('region', { name: 'Outbox', exact: true });
+    await expect(outbox.locator('.outbox-items')).toBeHidden();
+    await outbox.locator('summary').click();
+    await expect(outbox.locator('.conversation-item').filter({ hasText: recipient }).getByRole('heading', { name: 'Browser QA personal message', exact: true })).toBeVisible();
+    await outbox.locator('summary').click();
+    await expect(outbox.locator('.outbox-items')).toBeHidden();
   });
   await check('Normal Inbox replies to an unmatched sender without a contact matching flow', async () => {
     await page.goto(`http://127.0.0.1:3100/inbox/${inboundMessageId}`, { waitUntil: 'networkidle' });
@@ -408,6 +415,19 @@ try {
       await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
       await expect(page.getByText('We couldn’t complete that request', { exact: true })).toHaveCount(0);
       await noPageOverflow(page, route);
+      for (const search of await page.locator('.search-field').all()) {
+        const clearance = await search.evaluate(node => {
+          const input = node.querySelector('input'), icon = node.querySelector('svg');
+          if (!input || !icon) return 100;
+          return input.getBoundingClientRect().left + parseFloat(getComputedStyle(input).paddingLeft) - icon.getBoundingClientRect().right;
+        });
+        expect(clearance, `${route} search text clears its icon`).toBeGreaterThanOrEqual(6);
+      }
+      await page.evaluate(() => document.fonts.ready);
+      const typography = await page.locator('.page-header h1').evaluate(node => ({ family: getComputedStyle(node).fontFamily, size: parseFloat(getComputedStyle(node).fontSize) }));
+      expect(typography.family).not.toContain('Manrope');
+      expect(typography.size, `${route} heading remains readable`).toBeGreaterThanOrEqual(28);
+      await page.screenshot({ path: path.join(artifacts, `crm-modern-${route.replaceAll('/', '-')}.png`), fullPage: true });
     }
   });
   await check('Tablet and mobile layouts keep scrolling inside panels', async () => {
@@ -416,10 +436,39 @@ try {
       for (const route of ['overview', 'prospects', 'pipeline', 'settings/sending', 'analytics', 'inbox']) {
         await page.goto(`http://127.0.0.1:3100/${route}`, { waitUntil: 'networkidle' });
         await noPageOverflow(page, `${viewport.width}px ${route}`);
+        await page.screenshot({ path: path.join(artifacts, `crm-modern-${viewport.width}-${route.replaceAll('/', '-')}.png`), fullPage: true });
       }
     }
     await page.goto('http://127.0.0.1:3100/overview', { waitUntil: 'networkidle' });
     await page.screenshot({ path: path.join(artifacts, 'crm-mobile.png'), fullPage: true });
+  });
+  await check('Responsive navigation supports keyboard focus, Escape and page navigation', async () => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('http://127.0.0.1:3100/overview', { waitUntil: 'networkidle' });
+    const menu = page.getByRole('button', { name: 'Open navigation', exact: true });
+    await expect(page.locator('#workspace-navigation')).toHaveAttribute('inert', '');
+    await menu.click();
+    const drawer = page.getByRole('dialog', { name: 'Workspace navigation', exact: true });
+    await expect(drawer).toBeVisible();
+    await expect(page.locator('.main-shell')).toHaveAttribute('inert', '');
+    await expect(drawer.getByRole('button', { name: 'Close navigation', exact: true })).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(drawer.getByRole('button', { name: 'Sign out', exact: true })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeFocused();
+    await expect(page.locator('.main-shell')).not.toHaveAttribute('inert', '');
+    await menu.click();
+    await drawer.getByRole('link', { name: 'Analytics', exact: true }).click();
+    await expect(page).toHaveURL(/\/analytics$/);
+    await expect(page.locator('#workspace-navigation')).toHaveAttribute('inert', '');
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.goto('http://127.0.0.1:3100/overview', { waitUntil: 'networkidle' });
+    await expect(page.locator('#workspace-navigation')).not.toHaveAttribute('inert', '');
+    await page.evaluate(() => document.fonts.ready);
+    const font = await page.locator('body').evaluate(node => ({ family: getComputedStyle(node).fontFamily, loaded: [...document.fonts].filter(face => face.status === 'loaded').map(face => face.family) }));
+    const normalize = value => value.replaceAll('"', '').replaceAll("'", '').trim();
+    expect(font.loaded.map(normalize), 'Self-hosted variable font loads successfully').toContain(normalize(font.family.split(',')[0]));
+    expect(font.family).not.toContain('DM Sans');
   });
   expect(failures, 'Browser runtime errors').toEqual([]);
   console.log(`Browser acceptance complete: ${checks.length} checks; live sending disabled; isolated database ${database}.`);

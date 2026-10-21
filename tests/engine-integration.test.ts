@@ -90,6 +90,19 @@ describe.skipIf(!enabled)('durable engine against an isolated MySQL/MariaDB test
     expect(fake.syncMailbox).toHaveBeenCalledTimes(2);expect(await db('send_attempts')).toHaveLength(0);expect(fake.sendMail).not.toHaveBeenCalled();
   });
 
+  it('does not skip adjacent minute cron ticks that arrive less than sixty seconds apart',async()=>{
+    vi.useFakeTimers({toFake:['Date']});
+    try{
+      vi.setSystemTime(new Date('2026-10-21T01:29:01.952Z'));await runWorker({budgetMs:20000,maxJobs:1,syncOnly:true});
+      vi.setSystemTime(new Date('2026-10-21T01:30:01.500Z'));await runWorker({budgetMs:20000,maxJobs:1,syncOnly:true});
+      expect(fake.syncMailbox).toHaveBeenCalledTimes(2);
+      vi.setSystemTime(new Date('2026-10-21T01:30:59.999Z'));await runWorker({budgetMs:20000,maxJobs:1,syncOnly:true});
+      expect(fake.syncMailbox).toHaveBeenCalledTimes(2);expect(await db('jobs').where({kind:'sync'})).toHaveLength(2);
+      vi.setSystemTime(new Date('2026-10-21T01:31:00.000Z'));await runWorker({budgetMs:20000,maxJobs:1,syncOnly:true});
+      expect(fake.syncMailbox).toHaveBeenCalledTimes(3);expect(fake.sendMail).not.toHaveBeenCalled();expect(await db('send_attempts')).toHaveLength(0);
+    }finally{vi.useRealTimers();}
+  });
+
   it('continues an incomplete old scan without creating overlapping mailbox jobs',async()=>{
     const syncId=await requestSync(account.id);await db('jobs').where({id:syncId}).update({created_at:new Date(Date.now()-120000)});
     fake.syncMailbox.mockResolvedValueOnce({processed:50,complete:false});

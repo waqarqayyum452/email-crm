@@ -73,9 +73,10 @@ export async function requestSync(accountId:string) {
 
 async function queueDueSync(settings:any) {
   const accounts=await db('email_accounts').whereNotNull('imap_secret').whereNotNull('verified_at').whereIn('status',['active','paused','error']);
-  // Anchor cadence to when the scan was queued. Measuring from completion makes
-  // a one-minute cron miss every other tick after a scan takes a few seconds.
-  for(const account of accounts){const previous=await db('jobs').where({account_id:account.id,kind:'sync'}).orderBy('created_at','desc').first();if(!previous||new Date(previous.created_at).getTime()<=Date.now()-settings.poll_interval_seconds*1000)await requestSync(account.id);}
+  // Queue at most once per UTC polling period. Exact elapsed-time comparisons
+  // skip a minute when the next cron arrives slightly earlier than the last.
+  const periodMs=settings.poll_interval_seconds*1000,currentPeriod=Math.floor(Date.now()/periodMs);
+  for(const account of accounts){const previous=await db('jobs').where({account_id:account.id,kind:'sync'}).orderBy('created_at','desc').first();if(!previous||Math.floor(new Date(previous.created_at).getTime()/periodMs)<currentPeriod)await requestSync(account.id);}
 }
 
 async function replyRecipientIssue(trx:Database,job:any,payload:any,contact:any):Promise<string|null> {

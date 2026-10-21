@@ -8,6 +8,7 @@ import { renderStep, sanitizeEmail, followupTime, nextSendingTime } from './engi
 import { contactEligibility, manualRecipientEligibility, stopContact } from './engine/policy.js';
 import { prepareMarketing } from './tracking.js';
 import { runWorker } from './worker.js';
+import { groupConversations, conversationParticipant, type ThreadMessage } from './engine/threads.js';
 
 const stepSchema = z.object({subject:z.string().min(1).max(998).refine(s=>!/[\r\n]/.test(s),'Subject must be one line'),body_text:z.string().min(1).max(100000),body_html:z.string().max(200000).nullable().optional(),delay_days:z.number().int().min(0).max(365).default(0)});
 const draftSchema = z.object({name:z.string().trim().min(1).max(200),account_id:z.string().uuid(),steps:z.array(stepSchema).min(1).max(10),contact_ids:z.array(z.string().uuid()).max(10000).default([]),open_tracking:z.boolean().default(false),click_tracking:z.boolean().default(false),scheduled_at:z.string().datetime({offset:true}).nullable().optional()});
@@ -164,7 +165,24 @@ async function withDeliveryStatus(messages:any[]) {
     return {...message,...(message.direction==='outbound'?{send_status,accepted_at:attempt?.accepted_at||null}:{})};
   });
 }
-inboxRouter.get('/',async(req,res)=>{const filters=z.object({classification:z.enum(['human_reply','automatic','delivery_failure','unmatched','uncertain','outbound']).optional(),account_id:z.string().uuid().optional()}).parse(req.query);const query=db('messages').orderBy('received_at','desc').limit(200);if(filters.classification)query.where({classification:filters.classification});if(filters.account_id)query.where({account_id:filters.account_id});res.json({items:await withDeliveryStatus(await query.select('id','attempt_id','account_id','contact_id','campaign_id','direction','from_email','to_email','subject','classification','assigned_to','received_at'))});});
+const threadColumns=['id','attempt_id','account_id','contact_id','campaign_id','direction','from_email','to_email','subject','classification','assigned_to','received_at','created_at','message_id','in_reply_to','references_json'];
+inboxRouter.get('/',async(req,res)=>{
+  const filters=z.object({classification:z.enum(['human_reply','automatic','delivery_failure','unmatched','uncertain','outbound']).optional(),account_id:z.string().uuid().optional()}).parse(req.query);
+  const query=db('messages');if(filters.account_id)query.where({account_id:filters.account_id});
+  // Group headers before limiting conversations; older parents must not vanish
+  // merely because a mailbox has received more than 200 individual messages.
+  const groups=groupConversations(await query.select(threadColumns) as ThreadMessage[])
+    .filter(group=>!filters.classification||group.messages.some(message=>message.classification===filters.classification)).slice(0,200);
+  const latestIds=groups.map(group=>group.latest.id);
+  const previews=latestIds.length?await db('messages').whereIn('id',latestIds).select('id',db.raw('LEFT(body_text, 200) as preview')):[];
+  const previewById=new Map(previews.map(message=>[message.id,message.preview]));
+  const items=groups.map(({root,latest,messages})=>{
+    const {references_json,in_reply_to,message_id,...summary}=latest;
+    return {...summary,id:root.id,thread_id:root.id,subject:root.subject,latest_subject:latest.subject,
+      latest_message_id:latest.id,message_ids:messages.map(message=>message.id),message_count:messages.length,preview:previewById.get(latest.id)||''};
+  });
+  res.json({items:await withDeliveryStatus(items)});
+});
 inboxRouter.get('/outbox',async(req,res)=>{
   const filters=z.object({account_id:z.string().uuid().optional()}).parse(req.query);
   const query=db('jobs').where({kind:'send'}).whereIn('status',['queued','leased','held','failed']).whereRaw("JSON_TYPE(JSON_EXTRACT(payload, '$.is_manual')) = 'BOOLEAN' AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.is_manual')) = 'true'").orderBy('created_at','desc').limit(50);
@@ -185,10 +203,14 @@ inboxRouter.post('/compose',permit('inbox:write'),async(req,res)=>{
 });
 inboxRouter.get('/:id',async(req,res)=>{
   const message=await db('messages').where({id:req.params.id}).first();if(!message)throw new HttpError(404,'Message not found.');
-  const participant=normalizeEmail(message.direction==='inbound'?message.from_email:message.to_email);
-  const thread=await db('messages').where({account_id:message.account_id}).where(builder=>builder.where(inner=>inner.where({direction:'inbound'}).whereRaw('LOWER(TRIM(from_email)) = ?',[participant])).orWhere(inner=>inner.where({direction:'outbound'}).whereRaw('LOWER(TRIM(to_email)) = ?',[participant]))).orderBy('received_at');
+  const participant=conversationParticipant(message);
+  const headers=await db('messages').where({account_id:message.account_id}).select(threadColumns);
+  const conversation=groupConversations(headers as ThreadMessage[]).find(group=>group.messages.some(item=>item.id===message.id))!;
+  const thread=await withDeliveryStatus(await db('messages').whereIn('id',conversation.messages.map(item=>item.id)));
+  const order=new Map(conversation.messages.map((item,index)=>[item.id,index]));thread.sort((a,b)=>order.get(a.id)!-order.get(b.id)!);
   const [delivery]=await withDeliveryStatus([message]);
-  res.json({...delivery,body_html:message.body_html?sanitizeEmail(message.body_html):null,references_json:json(message.references_json,[]),thread:(await withDeliveryStatus(thread)).map(m=>({...m,body_html:m.body_html?sanitizeEmail(m.body_html):null})),contact:await db('contacts').where({email:participant}).first()||null});
+  res.json({...delivery,thread_id:conversation.root.id,conversation_subject:conversation.root.subject,message_count:thread.length,reply_message_id:conversation.latest.id,
+    body_html:message.body_html?sanitizeEmail(message.body_html):null,references_json:json(message.references_json,[]),thread:thread.map(m=>({...m,body_html:m.body_html?sanitizeEmail(m.body_html):null})),contact:await db('contacts').where({email:participant}).first()||null});
 });
 inboxRouter.patch('/:id',permit('inbox:write'),async(req,res)=>{
   const body=z.object({contact_id:z.string().uuid().nullable().optional(),assigned_to:z.string().uuid().nullable().optional()}).parse(req.body);

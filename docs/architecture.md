@@ -52,6 +52,8 @@ UUID primary keys identify entities; foreign keys preserve references. Datetimes
 
 The migration files are authoritative for concrete column and index names. Run all migrations against the exact supported database build before treating any schema or locking behavior as verified.
 
+Inbox conversations are connected components of stored Message-ID, In-Reply-To and References headers, isolated by mailbox and normalized external address. A new compose without references starts a separate conversation even when its subject or recipient matches. A missing original ancestor can still connect replies, while known references to other participants are ignored. The earliest server-created member supplies the navigation ID; existing member URLs remain valid. The list groups header metadata before applying its 200-conversation limit and loads only the latest text preview per conversation; full bodies are loaded for the selected thread. This uses existing message records and requires no schema migration. Header grouping currently scans the selected mailbox's metadata on reads, so very large mail histories will need persisted/indexed conversation membership.
+
 ## Sending state machine
 
 1. A bounded runner safely claims due work with a lease.

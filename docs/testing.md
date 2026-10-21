@@ -128,3 +128,9 @@ A further real-host cadence issue was reproduced: a cron starting0.1seconds earl
 ## Workspace UI refresh (2026-10-21)
 
 The production Next.js build and TypeScript checks pass with locally hosted variable Geist through next/font/local. The expanded production browser walkthrough passes 16 checks against a fresh isolated local _ui_test database with live sending disabled. It covers all dashboard routes, desktop/tablet/mobile layouts, actual font loading, search-icon/text clearance, collapsed Outbox expansion, contact/campaign/settings flows, automatic Inbox updates with draft preservation, keyboard focus trapping and Escape/navigation behavior. Desktop and mobile screenshots were reviewed. No backend contract, production configuration or mailbox credential changes are part of the visual refresh.
+
+## Inbox scrolling and email conversations (2026-10-21)
+
+The isolated MariaDB suite passes 159 tests across 14 files with fake mail transports. New tests cover reply-header chains, changed reply subjects, independent compose to the same address with the same subject, missing ancestors, malformed/cyclic references, mailbox/participant isolation, stable navigation anchors, latest-message reply anchors, delivery states and grouping before the 200-conversation limit. No schema migration is needed.
+
+The production browser walkthrough passes 17 checks with live sending disabled and no real mailbox credentials. Inbox checks verify a fixed Outbox header, independent list/reader scrolling without page overflow, one row per reply chain, separate new conversations, draft preservation during updates/failures, latest-message reply submission, preserving the reading position when a reply arrives, jumping to the latest reply, and mobile list/reader navigation. Desktop and mobile screenshots are inspected; build and TypeScript checks pass.

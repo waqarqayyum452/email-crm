@@ -123,8 +123,37 @@ describe.skipIf(!enabled)('live Inbox cutover and authenticated status APIs on i
 
   it('reports SMTP acceptance, held unknown outcomes, active submission and retry queue state in lists and threads',async()=>{
     const fixtures=await Promise.all([outbound('accepted','completed'),outbound('unknown','held'),outbound('submitting','leased'),outbound('temporary','queued')]);
+    for(const [index,fixture] of fixtures.entries())await db('messages').where({id:fixture.message.id}).update({in_reply_to:index?fixtures[0].message.message_id:null,references_json:JSON.stringify(index?[fixtures[0].message.message_id]:[]),created_at:new Date(Date.UTC(2026,9,21,10,index)),received_at:new Date(Date.UTC(2026,9,21,10,index))});
     const listed=await request(app).get('/api/inbox').set('Cookie',owner.cookie);expect(listed.status).toBe(200);
-    for(const [index,status] of ['accepted','held','sending','queued'].entries())expect(listed.body.items.find((item:any)=>item.id===fixtures[index].message.id).send_status).toBe(status);
+    expect(listed.body.items).toHaveLength(1);expect(listed.body.items[0]).toMatchObject({id:fixtures[0].message.id,latest_message_id:fixtures[3].message.id,message_count:4,send_status:'queued'});
     const detail=await request(app).get('/api/inbox/'+fixtures[0].message.id).set('Cookie',owner.cookie);expect(detail.status).toBe(200);expect(detail.body.send_status).toBe('accepted');expect(detail.body.accepted_at).toBeTruthy();expect(detail.body.thread).toHaveLength(4);expect(new Set(detail.body.thread.map((message:any)=>message.send_status))).toEqual(new Set(['accepted','held','sending','queued']));
+  });
+
+  it('keeps one conversation per reply chain while separating new compose, other senders and mailboxes',async()=>{
+    const original=await outbound('accepted','completed'),separate=await outbound('accepted','completed');
+    const at=(minute:number)=>new Date(Date.UTC(2026,9,21,10,minute));
+    await db('messages').where({id:original.message.id}).update({subject:'Project scope',created_at:at(0),received_at:at(0)});
+    await db('messages').where({id:separate.message.id}).update({subject:'A new project',created_at:at(2),received_at:at(2)});
+    const incoming={id:id(),account_id:account.id,direction:'inbound',message_id:`<${id()}@example.test>`,in_reply_to:original.message.message_id,references_json:JSON.stringify([original.message.message_id]),from_email:'person@example.test',to_email:account.email,subject:'Re: Project scope',body_text:'Reply in the existing conversation',classification:'human_reply',received_at:at(1),created_at:at(1)};
+    const latest={...incoming,id:id(),message_id:`<${id()}@example.test>`,in_reply_to:incoming.message_id,references_json:JSON.stringify([original.message.message_id,incoming.message_id]),subject:'Updated scope details',received_at:at(3),created_at:at(3)};
+    const forged={...incoming,id:id(),message_id:`<${id()}@example.test>`,from_email:'other-person@example.test',body_text:'A different sender must stay separate'};
+    const otherAccount=await insertAccount(),otherMailbox={...incoming,id:id(),account_id:otherAccount.id,to_email:otherAccount.email};
+    await db('messages').insert([incoming,latest,forged,otherMailbox]);
+    const listed=await request(app).get('/api/inbox').query({account_id:account.id}).set('Cookie',owner.cookie);expect(listed.status).toBe(200);expect(listed.body.items).toHaveLength(3);
+    const conversation=listed.body.items.find((row:any)=>row.id===original.message.id);expect(conversation).toMatchObject({subject:'Project scope',latest_message_id:latest.id,message_count:3,preview:latest.body_text});expect(conversation.message_ids).toEqual([original.message.id,incoming.id,latest.id]);
+    expect(listed.body.items.find((row:any)=>row.id===separate.message.id)).toMatchObject({subject:'A new project',message_count:1});
+    const detail=await request(app).get('/api/inbox/'+incoming.id).set('Cookie',owner.cookie);expect(detail.status).toBe(200);expect(detail.body).toMatchObject({thread_id:original.message.id,conversation_subject:'Project scope',reply_message_id:latest.id});expect(detail.body.thread.map((row:any)=>row.id)).toEqual([original.message.id,incoming.id,latest.id]);
+    const filtered=await request(app).get('/api/inbox').query({account_id:account.id,classification:'outbound'}).set('Cookie',owner.cookie);expect(filtered.body.items.some((row:any)=>row.thread_id===original.message.id)).toBe(true);
+    const reply=await request(app).post('/api/inbox/'+detail.body.reply_message_id+'/reply').set('Cookie',owner.cookie).set('x-csrf-token',owner.csrf).send({body_text:'Replying to the latest email'});expect(reply.status).toBe(202);
+    const queued=await db('jobs').where({id:reply.body.job_id}).first();expect(typeof queued.payload==='string'?JSON.parse(queued.payload):queued.payload).toMatchObject({reply_source_id:latest.id,in_reply_to:latest.message_id});
+  });
+
+  it('applies the 200 limit after threading without losing older parents',async()=>{
+    const original=await outbound('accepted','completed');await db('messages').where({id:original.message.id}).update({received_at:new Date('2020-01-01Z'),created_at:new Date('2020-01-01Z')});
+    const base={account_id:account.id,direction:'inbound',references_json:'[]',from_email:'person@example.test',to_email:account.email,subject:'Independent email',body_text:'Independent content',classification:'unmatched',received_at:new Date('2025-01-01Z'),created_at:new Date('2025-01-01Z')};
+    await db('messages').insert(Array.from({length:205},()=>({...base,id:id(),message_id:`<${id()}@example.test>`})));
+    const reply={...base,id:id(),message_id:`<${id()}@example.test>`,in_reply_to:original.message.message_id,references_json:JSON.stringify([original.message.message_id]),received_at:new Date('2026-10-21Z'),created_at:new Date('2026-10-21Z')};await db('messages').insert(reply);
+    const listed=await request(app).get('/api/inbox').set('Cookie',owner.cookie);expect(listed.body.items).toHaveLength(200);expect(listed.body.items[0]).toMatchObject({id:original.message.id,message_count:2,latest_message_id:reply.id});
+    const detail=await request(app).get('/api/inbox/'+reply.id).set('Cookie',owner.cookie);expect(detail.body.thread).toHaveLength(2);
   });
 });

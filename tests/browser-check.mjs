@@ -344,11 +344,13 @@ try {
     const incomingId = randomUUID(), receivedAt = new Date();
     await db('messages').insert({
       id: incomingId, account_id: composeMailboxId, contact_id: null, direction: 'inbound',
-      message_id: `<live-inbox-${runId}@example.test>`, references_json: '[]', from_email: inboxSender,
+      message_id: `<live-inbox-${runId}@example.test>`, in_reply_to: `<contactless-${runId}@example.test>`, references_json: JSON.stringify([`<contactless-${runId}@example.test>`]), from_email: inboxSender,
       to_email: `normal-inbox-${runId}@example.test`, subject: `Automatic inbox update ${runId}`,
       body_text: `New incoming message ${runId}`, classification: 'unmatched', is_test: false, received_at: receivedAt, created_at: receivedAt,
     });
-    await expect(page.locator('.conversation-list').getByText(`Automatic inbox update ${runId}`, { exact: true })).toBeVisible({ timeout: 16000 });
+    await expect(page.locator('.conversation-list .conversation-item').filter({ hasText: `New incoming message ${runId}` })).toHaveCount(1, { timeout: 16000 });
+    await expect(page.locator('.conversation-list .conversation-item').filter({ hasText: `Contactless inbox QA ${runId}` })).toHaveCount(1);
+    await expect(page.locator('.conversation-count').filter({ hasText: '2' })).toBeVisible();
     await expect(page.locator('.thread-messages').getByText(`New incoming message ${runId}`, { exact: true })).toBeVisible({ timeout: 16000 });
     await expect(draft).toHaveValue('An unfinished reply must survive automatic updates.');
 
@@ -396,6 +398,70 @@ try {
       await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); });
     }
     expect(await db('send_attempts')).toHaveLength(0);
+  });
+  await check('Inbox keeps Outbox fixed, scrolls both panes independently, and separates a new subject', async () => {
+    const original = await db('messages').where({ id: inboundMessageId }).first();
+    const fixture = { account_id: composeMailboxId, direction: 'inbound', from_email: inboxSender, to_email: original.to_email, classification: 'unmatched', references_json: '[]', is_test: false };
+    const newSubject = `Separate conversation ${runId}`;
+    const separateId = randomUUID();
+    await db('messages').insert([
+      { ...fixture, id: separateId, message_id: `<separate-${runId}@example.test>`, subject: newSubject, body_text: 'A fresh email to the same person has its own conversation.', received_at: new Date(), created_at: new Date() },
+      ...Array.from({ length: 18 }, (_, i) => ({ ...fixture, id: randomUUID(), message_id: `<list-${i}-${runId}@example.test>`, subject: `Independent conversation ${i}`, body_text: 'Independent email for scrolling checks.', received_at: new Date(), created_at: new Date() })),
+      ...Array.from({ length: 10 }, (_, i) => ({ ...fixture, id: randomUUID(), message_id: `<thread-${i}-${runId}@example.test>`, in_reply_to: original.message_id, references_json: JSON.stringify([original.message_id]), subject: 'Re: Existing conversation', body_text: `Scrolling reply ${i}\n${'Readable email body.\n'.repeat(12)}`, received_at: new Date(Date.now() + (i + 1) * 1000), created_at: new Date(Date.now() + (i + 1) * 1000) })),
+    ]);
+    await page.goto(`http://127.0.0.1:3100/inbox/${inboundMessageId}`, { waitUntil: 'networkidle' });
+    const listPane = page.getByRole('region', { name: 'Conversation list', exact: true });
+    const reader = page.getByRole('region', { name: 'Conversation messages', exact: true });
+    await expect(listPane.locator('.conversation-item').filter({ hasText: `Contactless inbox QA ${runId}` })).toHaveCount(1);
+    await expect(listPane.locator('.conversation-item').filter({ hasText: newSubject })).toHaveCount(1);
+    await expect(reader.locator('.thread-message')).toHaveCount(12);
+    await expect(reader.getByText('A fresh email to the same person has its own conversation.', { exact: true })).toHaveCount(0);
+    const fixedBox = await page.getByRole('region', { name: 'Outbox', exact: true }).boundingBox();
+    const headerBox = await page.locator('.conversation-heading').boundingBox();
+    const composerBox = await page.locator('.reply-composer').boundingBox();
+    const leftScroll = await listPane.evaluate(node => { node.scrollTop = node.scrollHeight; return node.scrollTop; });
+    expect(leftScroll).toBeGreaterThan(100);
+    expect(await reader.evaluate(node => node.scrollHeight - node.clientHeight)).toBeGreaterThan(100);
+    await reader.evaluate(node => { node.scrollTop = 0; });
+    await expect.poll(() => reader.evaluate(node => node.scrollTop)).toBe(0);
+    expect(await listPane.evaluate(node => node.scrollTop)).toBe(leftScroll);
+    expect((await page.getByRole('region', { name: 'Outbox', exact: true }).boundingBox()).y).toBe(fixedBox.y);
+    expect((await page.locator('.conversation-heading').boundingBox()).y).toBe(headerBox.y);
+    expect((await page.locator('.reply-composer').boundingBox()).y).toBe(composerBox.y);
+    expect(composerBox.y + composerBox.height).toBeLessThanOrEqual(1100);
+    expect(await page.evaluate(() => ({ y: window.scrollY, overflow: document.documentElement.scrollHeight - window.innerHeight }))).toEqual({ y: 0, overflow: 0 });
+    await listPane.evaluate(node => { node.scrollTop = 0; });
+    const newReplyId = randomUUID();
+    const draft = page.getByRole('textbox', { name: 'Reply message', exact: true });
+    await draft.fill('Keep this draft while I read older replies.');
+    await db('messages').insert({ ...fixture, id: newReplyId, message_id: `<new-while-reading-${runId}@example.test>`, in_reply_to: original.message_id, references_json: JSON.stringify([original.message_id]), subject: 'Re: Existing conversation', body_text: 'A new reply while reading earlier messages.', received_at: new Date(Date.now() + 20000), created_at: new Date(Date.now() + 20000) });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(reader.locator('.thread-message')).toHaveCount(13, { timeout: 16000 });
+    await expect(page.getByRole('button', { name: 'New messages: jump to latest', exact: true })).toBeVisible();
+    expect(await reader.evaluate(node => node.scrollTop)).toBe(0);
+    await expect(draft).toHaveValue('Keep this draft while I read older replies.');
+    await page.getByRole('button', { name: 'New messages: jump to latest', exact: true }).click();
+    await expect.poll(() => reader.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(2);
+    const queued = await mutate(page, 'POST', `/inbox/${newReplyId}/reply`, () => page.getByRole('button', { name: 'Queue reply', exact: true }).click());
+    const job = await db('jobs').where({ id: queued.job_id }).first();
+    expect(typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload).toMatchObject({ reply_source_id: newReplyId });
+    expect(await db('send_attempts')).toHaveLength(0);
+    await expect.poll(() => reader.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(2);
+    await page.screenshot({ path: path.join(artifacts, 'crm-inbox-fixed-panes.png'), fullPage: true });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect.poll(() => page.locator('#workspace-navigation').evaluate(node => node.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
+    await expect(page.locator('.inbox-sidebar')).toBeHidden();
+    await expect(page.getByRole('link', { name: 'All conversations', exact: true })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Reply message', exact: true })).toBeVisible();
+    await expect.poll(() => reader.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(2);
+    await noPageOverflow(page, '390px selected email conversation');
+    expect(await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)).toBe(0);
+    await page.screenshot({ path: path.join(artifacts, 'crm-inbox-reader-mobile.png'), fullPage: true, animations: 'disabled' });
+    await page.getByRole('link', { name: 'All conversations', exact: true }).click();
+    await expect(page.locator('.inbox-sidebar')).toBeVisible();
+    await expect(page.locator('.conversation-detail')).toBeHidden();
+    await page.setViewportSize({ width: 1440, height: 1100 });
   });
   await check('Normal Inbox compose modal fits a mobile screen', async () => {
     await page.setViewportSize({ width: 390, height: 844 });

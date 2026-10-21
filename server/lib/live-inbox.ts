@@ -5,11 +5,12 @@ import { audit, HttpError } from './util.js';
 
 /** Scheduler diagnostics contain counters and mailbox state, never mail or credentials. */
 export async function liveInboxStatus() {
-  const [settings, state, accounts, counts, unknown] = await Promise.all([
+  const [settings, state, accounts, counts, unknown, detailsReady, draftsReady] = await Promise.all([
     getSettings(), db('worker_state').where({ id: 'scheduler' }).first(),
     db('email_accounts').select('id', 'status', 'verified_at', 'last_sync_at', 'last_successful_sync_at', 'last_error'),
     db('jobs').select('kind', 'status').count({ count: '*' }).groupBy('kind', 'status'),
     db('send_attempts').where({ status: 'unknown' }).count({ count: '*' }).first(),
+    db.schema.hasTable('message_details'),db.schema.hasTable('mail_drafts'),
   ]);
   return {
     live_send_enabled: config.liveSendEnabled, paused: settings.paused,
@@ -17,6 +18,7 @@ export async function liveInboxStatus() {
     accounts: accounts.map(({ last_error, ...account }) => ({ ...account, has_error: !!last_error })),
     jobs: counts.map((row:any) => ({ kind: row.kind, status: row.status, count: Number(row.count) })),
     unknown_attempts: Number(unknown?.count || 0),
+    mail_storage_ready: detailsReady && draftsReady,
   };
 }
 

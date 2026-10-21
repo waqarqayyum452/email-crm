@@ -6,7 +6,8 @@ import { audit, HttpError, id, normalizeEmail } from './lib/util.js';
 import { renderStep, nextSendingTime, followupTime, smtpFailure } from './engine/content.js';
 import { consumedStatuses, contactEligibility, manualRecipientEligibility, stopContact } from './engine/policy.js';
 import { smtpTransport, syncMailbox } from './engine/mail.js';
-import { prepareMarketing } from './tracking.js';
+import { prepareMarketing, prepareManualTracking } from './tracking.js';
+import { ensureMailFeatures, saveMessageDetails, smtpAttachments } from './engine/mail-features.js';
 
 const now = () => new Date();
 const leaseMs = 60000;
@@ -122,6 +123,7 @@ async function actualEligibility(trx:Database,job:any,account:any,settings:any,p
 
 /** The agency settings lock serializes capacity across all mailboxes and workers. */
 export async function reserveSend(claimed:any) {
+  await ensureMailFeatures();
   return db.transaction(async trx=>{
     await trx('business_settings').where({id:'agency'}).forUpdate().first();
     const job=await trx('jobs').where({id:claimed.id}).forUpdate().first();if(!job||job.status!=='leased'||job.lease_owner!==claimed.lease_owner)return null;
@@ -148,10 +150,12 @@ export async function reserveSend(claimed:any) {
     if(!attempt){attempt={id:id(),job_id:job.id,account_id:account.id,campaign_id:job.campaign_id||null,enrollment_id:job.enrollment_id||null,contact_id:contact?.id||null,message_id:messageId,recipient,status:'reserved',retryable:false,is_test:!!payload.is_test,is_reply:!!payload.is_reply,submission_count:1,reserved_at:now(),created_at:now()};await trx('send_attempts').insert(attempt);}else{await trx('send_attempts').where({id:attempt.id}).update({status:'reserved',reserved_at:now(),submitted_at:null,accepted_at:null,retryable:false,error_code:null,error_message:null,submission_count:Number(attempt.submission_count||0)+1});}
     let message=await trx('messages').where({attempt_id:attempt.id}).first(),headers:any={};
     if(!message){message={id:id(),account_id:account.id,contact_id:contact?.id||null,campaign_id:job.campaign_id||null,enrollment_id:job.enrollment_id||null,attempt_id:attempt.id,direction:'outbound',message_id:messageId,in_reply_to:payload.in_reply_to||null,references_json:JSON.stringify(payload.references||[]),from_email:account.email,to_email:recipient,subject:content.subject,body_text:content.body_text,body_html:content.body_html||null,classification:'outbound',is_test:!!payload.is_test,received_at:now(),created_at:now()};await trx('messages').insert(message);
-      if(!payload.is_reply&&payload.is_manual!==true){const marketing=await prepareMarketing(message,version||payload,settings,trx);headers=marketing.headers;message={...message,body_text:marketing.body_text,body_html:marketing.body_html};await trx('messages').where({id:message.id}).update({body_text:message.body_text,body_html:message.body_html,open_tracking:marketing.open_tracking,click_tracking:marketing.click_tracking});}
+      await saveMessageDetails(message,{from_name:account.sender_name||settings.sender_name,to_name:contact?[contact.first_name,contact.last_name].filter(Boolean).join(' '):'',attachments:payload.is_manual===true?payload.attachments||[]:[]},trx);
+      if(payload.is_manual===true){const tracking=await prepareManualTracking(message,payload.open_tracking===true,trx);message={...message,...tracking};await trx('messages').where({id:message.id}).update(tracking);}
+      else if(!payload.is_reply){const marketing=await prepareMarketing(message,version||payload,settings,trx);headers=marketing.headers;message={...message,body_text:marketing.body_text,body_html:marketing.body_html};await trx('messages').where({id:message.id}).update({body_text:message.body_text,body_html:message.body_html,open_tracking:marketing.open_tracking,click_tracking:marketing.click_tracking});}
     }else if(!payload.is_reply&&payload.is_manual!==true){const unsub=await trx('tracking_tokens').where({message_id:message.id,kind:'unsubscribe'}).first();if(unsub){headers={'List-Unsubscribe':`<${config.appUrl.replace(/\/$/,'')}/unsubscribe/${unsub.id}>`,'List-Unsubscribe-Post':'List-Unsubscribe=One-Click'};}}
     await trx('jobs').where({id:job.id}).update({attempts:job.attempts+1,updated_at:now()});
-    return {job,attempt,account,contact,recipient,message,headers,settings};
+    return {job,attempt,account,contact,recipient,message,headers,settings,attachments:smtpAttachments(payload.is_manual===true?payload.attachments||[]:[])};
   });
 }
 
@@ -202,6 +206,7 @@ async function sendJob(job:any,deadline:number) {
       to:prepared.recipient,messageId:prepared.attempt.message_id,
       subject:message.subject,text:message.body_text,html:message.body_html||undefined,
       inReplyTo:message.in_reply_to||undefined,references:json(message.references_json,[]),headers:prepared.headers,
+      attachments:prepared.attachments,
       disableFileAccess:true,disableUrlAccess:true,
     }),deadline-500,()=>transport.close());
     if(!result.accepted?.some((address:any)=>normalizeEmail(String(typeof address==='string'?address:address.address))===prepared.recipient)){const rejected:any=new Error('Recipient rejected');rejected.code='EENVELOPE';rejected.responseCode=550;throw rejected;}
@@ -244,6 +249,7 @@ export async function reconcileAttempt(attemptId:string,resolution:'accepted'|'n
 }
 
 export async function runWorker(options:{budgetMs?:number;maxJobs?:number;syncOnly?:boolean;inboxOnly?:boolean}={}) {
+  await ensureMailFeatures();
   const workerId=randomUUID(),deadline=Date.now()+Math.min(20000,Math.max(1000,options.budgetMs||15000));let processed=0;
   await db('worker_state').where({id:'scheduler'}).update({last_heartbeat:now(),last_error:null,updated_at:now()});
   await recoverExpiredLeases();const settings=await getSettings();await queueDueSync(settings);

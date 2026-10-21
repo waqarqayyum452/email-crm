@@ -7,6 +7,7 @@ import { db, json, type Database } from '../db.js';
 import { id, normalizeEmail } from '../lib/util.js';
 import { classifyIncoming, referenceIds, checkpointRange, sanitizeEmail, deliveryReports } from './content.js';
 import { stopContact, suppressEmail } from './policy.js';
+import { ensureMailFeatures, saveMessageDetails, incomingAttachments } from './mail-features.js';
 
 export async function smtpTransport(account: any) {
   const pinned=await validateMailTarget(account.smtp_host,account.smtp_port,'smtp');
@@ -35,6 +36,7 @@ export async function findReply(parsed: any, accountId: string, trx: Database = 
 }
 
 export async function ingestIncoming(account: any, parsed: any, uid: number, uidValidity: string, trx: Database) {
+  await ensureMailFeatures();
   let messageId=String(parsed.messageId||`<imap-${account.id}-${uidValidity}-${uid}@crm.invalid>`).slice(0,254);
   if(!messageId.trim())messageId=`<imap-${account.id}-${uidValidity}-${uid}@crm.invalid>`;
   const existing=await trx('messages').where({account_id:account.id,message_id:messageId}).first();if(existing)return {duplicate:true,message:existing};
@@ -50,6 +52,7 @@ export async function ingestIncoming(account: any, parsed: any, uid: number, uid
   if(classification==='delivery_failure'&&(!matched||!deliveryReports(parsed).some(report=>report.recipient===normalizeEmail(matched.to_email)&&report.status.startsWith('5.'))))classification='uncertain';
   const message={id:id(),account_id:account.id,contact_id:contactId,campaign_id:matched?.campaign_id||null,enrollment_id:matched?.enrollment_id||null,direction:'inbound',message_id:messageId,in_reply_to:parsed.inReplyTo?String(parsed.inReplyTo).slice(0,254):null,references_json:JSON.stringify(referenceIds(parsed).slice(-100)),from_email:sender,to_email:account.email,subject:String(parsed.subject||'(No subject)').slice(0,998),body_text:String(parsed.text||'').slice(0,200000),body_html:parsed.html?sanitizeEmail(String(parsed.html).slice(0,300000)):null,classification,is_test:!!matched?.is_test,received_at:parsed.date instanceof Date&&!Number.isNaN(parsed.date.getTime())?parsed.date:new Date(),created_at:new Date()};
   await trx('messages').insert(message);
+  await saveMessageDetails(message,{from_name:parsed.from?.value?.[0]?.name,to_name:account.sender_name,attachments:incomingAttachments(parsed)},trx);
   if(contactId&&classification==='human_reply'){
     await stopContact(contactId,'Human reply detected: agency-wide outreach stopped','stopped',trx);
     const stage=await trx('pipeline_stages').where({name:'Replied'}).first();
@@ -65,6 +68,7 @@ export async function ingestIncoming(account: any, parsed: any, uid: number, uid
 }
 
 export async function syncMailbox(account: any, options: {deadline?:number; maxMessages?:number; client?:any} = {}) {
+  await ensureMailFeatures();
   const client=options.client||await imapClient(account),deadline=options.deadline||Date.now()+15000;
   let lock:any,processed=0,complete=true;
   const deadlineTimer=setTimeout(()=>client.close(),Math.max(1,deadline-Date.now()-500));
@@ -88,7 +92,7 @@ export async function syncMailbox(account: any, options: {deadline?:number; maxM
     for(const item of metadata){
       if(Date.now()>deadline-3000){complete=false;break;}
       let parsed:any;
-      if(item.size>2_000_000){parsed={messageId:item.envelope?.messageId,from:{value:item.envelope?.from||[]},subject:item.envelope?.subject||'',date:item.envelope?.date,headers:new Map([['auto-submitted','auto-generated']]),text:'Large message was not downloaded. Review it in the mailbox; attachments are deferred.'};}
+      if(item.size>8*1024*1024){parsed={messageId:item.envelope?.messageId,from:{value:item.envelope?.from||[]},subject:item.envelope?.subject||'',date:item.envelope?.date,headers:new Map([['auto-submitted','auto-generated']]),text:'This message exceeds the 8 MB download limit. Read it and its attachments in webmail.'};}
       else{const full=await client.fetchOne(item.uid,{source:true},{uid:true});if(!full||!full.source)throw new Error('IMAP message disappeared before checkpoint');parsed=await simpleParser(full.source,{skipHtmlToText:true,skipTextToHtml:true,maxHtmlLengthToParse:300000});}
       await db.transaction(async trx=>{
         // Global send lock ensures detected replies are applied before any later reservation.

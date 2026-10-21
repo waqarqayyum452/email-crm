@@ -12,6 +12,14 @@ const base = () => config.appUrl.replace(/\/$/,'');
 const PIXEL=Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64');
 export function trackingUrl(kind:'open'|'click',value:string) { return `${base()}/t/${kind}/${value}${kind==='open'?'.gif':''}`; }
 
+export async function prepareManualTracking(message:any, enabled:boolean, trx:Database) {
+  if(!enabled)return {body_html:message.body_html,open_tracking:false};
+  const trackingToken=token();
+  await trx('tracking_tokens').insert({id:trackingToken,message_id:message.id,campaign_id:message.campaign_id||null,contact_id:message.contact_id||null,kind:'tracking',created_at:new Date()});
+  const html=message.body_html?sanitizeEmail(message.body_html):'<div>'+escapeHtml(message.body_text).replace(/\n/g,'<br>')+'</div>';
+  return {body_html:html+`<img src="${trackingUrl('open',trackingToken)}" width="1" height="1" alt="">`,open_tracking:true};
+}
+
 export async function prepareMarketing(message: any, options: {open_tracking?:boolean;click_tracking?:boolean}, settings: any, trx: Database) {
   const unsubscribeToken=token(),trackingToken=token(),now=new Date();
   const openTracking=!!options.open_tracking&&!message.is_test,clickTracking=!!options.click_tracking&&!message.is_test;

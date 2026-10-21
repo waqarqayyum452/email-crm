@@ -9,6 +9,7 @@ import { contactEligibility, manualRecipientEligibility, stopContact } from './e
 import { prepareMarketing } from './tracking.js';
 import { runWorker } from './worker.js';
 import { groupConversations, conversationParticipant, type ThreadMessage } from './engine/threads.js';
+import { ensureMailFeatures, enrichMail, manualContentSchema, manualContent, encryptAttachments } from './engine/mail-features.js';
 
 const stepSchema = z.object({subject:z.string().min(1).max(998).refine(s=>!/[\r\n]/.test(s),'Subject must be one line'),body_text:z.string().min(1).max(100000),body_html:z.string().max(200000).nullable().optional(),delay_days:z.number().int().min(0).max(365).default(0)});
 const draftSchema = z.object({name:z.string().trim().min(1).max(200),account_id:z.string().uuid(),steps:z.array(stepSchema).min(1).max(10),contact_ids:z.array(z.string().uuid()).max(10000).default([]),open_tracking:z.boolean().default(false),click_tracking:z.boolean().default(false),scheduled_at:z.string().datetime({offset:true}).nullable().optional()});
@@ -149,7 +150,7 @@ templateRouter.post('/:id/duplicate',permit('campaigns:write'),async(req,res)=>{
 templateRouter.post('/:id/archive',permit('campaigns:write'),async(req,res)=>{if(!await db('templates').where({id:req.params.id}).first())throw new HttpError(404,'Template not found.');await db.transaction(async trx=>{await trx('templates').where({id:req.params.id}).update({archived:true,updated_at:new Date()});await audit(req.user!.id,'template.archived','template',String(req.params.id),{},trx);});res.json({ok:true});});
 templateRouter.post('/:id/preview',async(req,res)=>{const template=await db('templates').where({id:req.params.id}).first();if(!template)throw new HttpError(404,'Template not found.');const body=z.object({contact_id:z.string().uuid()}).parse(req.body);const contact=await db('contacts').where({id:body.contact_id}).first();if(!contact)throw new HttpError(404,'Contact not found.');try{res.json(renderStep(template,parseContact(contact)));}catch(error){throw new HttpError(400,(error as Error).message);}});
 
-export const inboxRouter=Router();inboxRouter.use(requireUser);
+export const inboxRouter=Router();inboxRouter.use(requireUser,async(_req,_res,next)=>{await ensureMailFeatures();next();});
 inboxRouter.post('/process',permit('inbox:write'),async(req,res)=>{
   const command=z.object({mode:z.enum(['sync','inbox']).default('inbox')}).strict().parse(req.body||{});
   await consumeRateLimit('inbox-process:'+req.user!.id,20,60000);
@@ -165,7 +166,7 @@ async function withDeliveryStatus(messages:any[]) {
     return {...message,...(message.direction==='outbound'?{send_status,accepted_at:attempt?.accepted_at||null}:{})};
   });
 }
-const threadColumns=['id','attempt_id','account_id','contact_id','campaign_id','direction','from_email','to_email','subject','classification','assigned_to','received_at','created_at','message_id','in_reply_to','references_json'];
+const threadColumns=['id','attempt_id','account_id','contact_id','campaign_id','direction','from_email','to_email','subject','classification','assigned_to','received_at','created_at','message_id','in_reply_to','references_json','open_tracking'];
 inboxRouter.get('/',async(req,res)=>{
   const filters=z.object({classification:z.enum(['human_reply','automatic','delivery_failure','unmatched','uncertain','outbound']).optional(),account_id:z.string().uuid().optional()}).parse(req.query);
   const query=db('messages');if(filters.account_id)query.where({account_id:filters.account_id});
@@ -181,7 +182,7 @@ inboxRouter.get('/',async(req,res)=>{
     return {...summary,id:root.id,thread_id:root.id,subject:root.subject,latest_subject:latest.subject,
       latest_message_id:latest.id,message_ids:messages.map(message=>message.id),message_count:messages.length,preview:previewById.get(latest.id)||''};
   });
-  res.json({items:await withDeliveryStatus(items)});
+  res.json({items:await enrichMail(await withDeliveryStatus(items))});
 });
 inboxRouter.get('/outbox',async(req,res)=>{
   const filters=z.object({account_id:z.string().uuid().optional()}).parse(req.query);
@@ -191,13 +192,15 @@ inboxRouter.get('/outbox',async(req,res)=>{
   res.json({items:rows.map(({payload,...row})=>{const data=json<any>(payload,{});return {...row,recipient:data.manual_recipient,subject:data.content?.subject||'',status:row.status==='leased'?'sending':row.status};})});
 });
 inboxRouter.post('/compose',permit('inbox:write'),async(req,res)=>{
-  const body=z.object({account_id:z.string().uuid(),to:z.string().trim().email().max(254).transform(normalizeEmail),subject:stepSchema.shape.subject.transform(s=>s.trim()).refine(s=>s.length>0,'Enter a subject'),body_text:z.string().trim().min(1).max(100000)}).strict().parse(req.body),jobId=id();
+  const body=manualContentSchema.extend({account_id:z.string().uuid(),to:z.string().trim().email().max(254).transform(normalizeEmail),subject:stepSchema.shape.subject.transform(s=>s.trim()).refine(s=>s.length>0,'Enter a subject')}).strict().parse(req.body),jobId=id();
+  const attachments=encryptAttachments(body.attachments);
   await db.transaction(async trx=>{
     await trx('business_settings').where({id:'agency'}).forUpdate().first();
     const account=await trx('email_accounts').where({id:body.account_id}).first();if(!account)throw new HttpError(400,'Mailbox not found.');
     const reason=await manualRecipientEligibility(body.to,account,trx);if(reason)throw new HttpError(400,reason);
     const contact=await trx('contacts').where({email:body.to}).first();
-    await trx('jobs').insert({id:jobId,kind:'send',account_id:account.id,payload:JSON.stringify({is_manual:true,manual_recipient:body.to,contact_id:contact?.id||null,content:{subject:body.subject,body_text:body.body_text,body_html:null}}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()});
+    await trx('jobs').insert({id:jobId,kind:'send',account_id:account.id,payload:JSON.stringify({is_manual:true,manual_recipient:body.to,contact_id:contact?.id||null,attachments,open_tracking:body.open_tracking===true,content:{subject:body.subject,...manualContent(body,await getSettings(trx))}}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()});
+    if(body.draft_id)await trx('mail_drafts').where({id:body.draft_id,user_id:req.user!.id}).delete();
     await audit(req.user!.id,'inbox.compose_queued','email_account',account.id,{job_id:jobId},trx);
   });res.status(202).json({job_id:jobId});
 });
@@ -206,7 +209,7 @@ inboxRouter.get('/:id',async(req,res)=>{
   const participant=conversationParticipant(message);
   const headers=await db('messages').where({account_id:message.account_id}).select(threadColumns);
   const conversation=groupConversations(headers as ThreadMessage[]).find(group=>group.messages.some(item=>item.id===message.id))!;
-  const thread=await withDeliveryStatus(await db('messages').whereIn('id',conversation.messages.map(item=>item.id)));
+  const thread=await enrichMail(await withDeliveryStatus(await db('messages').whereIn('id',conversation.messages.map(item=>item.id))));
   const order=new Map(conversation.messages.map((item,index)=>[item.id,index]));thread.sort((a,b)=>order.get(a.id)!-order.get(b.id)!);
   const [delivery]=await withDeliveryStatus([message]);
   res.json({...delivery,thread_id:conversation.root.id,conversation_subject:conversation.root.subject,message_count:thread.length,reply_message_id:conversation.latest.id,
@@ -232,7 +235,8 @@ inboxRouter.patch('/:id',permit('inbox:write'),async(req,res)=>{
   });res.json({ok:true});
 });
 inboxRouter.post('/:id/reply',permit('inbox:write'),async(req,res)=>{
-  const body=z.object({body_text:z.string().trim().min(1).max(100000)}).parse(req.body),jobId=id();
+  const body=manualContentSchema.strict().parse(req.body),jobId=id();
+  const attachments=encryptAttachments(body.attachments);
   await db.transaction(async trx=>{
     await trx('business_settings').where({id:'agency'}).forUpdate().first();
     const message=await trx('messages').where({id:req.params.id}).forUpdate().first();if(!message)throw new HttpError(404,'Message not found.');
@@ -240,7 +244,8 @@ inboxRouter.post('/:id/reply',permit('inbox:write'),async(req,res)=>{
     const recipient=normalizeEmail(message.direction==='inbound'?message.from_email:message.to_email);
     const reason=await manualRecipientEligibility(recipient,account,trx);if(reason)throw new HttpError(400,reason);
     const contact=await trx('contacts').where({email:recipient}).first();
-    await trx('jobs').insert({id:jobId,kind:'send',account_id:message.account_id,campaign_id:message.campaign_id,payload:JSON.stringify({is_manual:true,manual_recipient:recipient,is_reply:true,contact_id:contact?.id||null,reply_source_id:message.id,reply_recipient:recipient,in_reply_to:message.message_id,references:[...json<string[]>(message.references_json,[]),message.message_id].slice(-30),content:{subject:(/^re:/i.test(message.subject)?message.subject:'Re: '+message.subject).replace(/[\r\n]/g,' ').slice(0,998),body_text:body.body_text,body_html:null}}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()});
+    await trx('jobs').insert({id:jobId,kind:'send',account_id:message.account_id,campaign_id:message.campaign_id,payload:JSON.stringify({is_manual:true,manual_recipient:recipient,is_reply:true,contact_id:contact?.id||null,reply_source_id:message.id,reply_recipient:recipient,in_reply_to:message.message_id,references:[...json<string[]>(message.references_json,[]),message.message_id].slice(-30),attachments,open_tracking:body.open_tracking===true,content:{subject:(/^re:/i.test(message.subject)?message.subject:'Re: '+message.subject).replace(/[\r\n]/g,' ').slice(0,998),...manualContent(body,await getSettings(trx))}}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()});
+    if(body.draft_id)await trx('mail_drafts').where({id:body.draft_id,user_id:req.user!.id}).delete();
     await audit(req.user!.id,'inbox.reply_queued','message',message.id,{job_id:jobId},trx);
   });res.status(202).json({job_id:jobId});
 });

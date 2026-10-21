@@ -127,6 +127,10 @@ try {
     to_email: `normal-inbox-${runId}@example.test`, subject: `Contactless inbox QA ${runId}`, body_text: 'A normal email does not require a CRM contact.',
     classification: 'unmatched', is_test: false, received_at: now, created_at: now,
   });
+  const { encryptSecret } = await import('../dist/server/lib/crypto.js');
+  const receivedFile = { id: randomUUID(), filename: 'conversation.pdf', content_type: 'application/pdf', size: 16, encrypted_content: encryptSecret(Buffer.from('%PDF browser QA').toString('base64')) };
+  const { encrypted_content: omittedFileContent, ...receivedManifest } = receivedFile;
+  await db('message_details').insert({ message_id: inboundMessageId, from_name: 'Jamie Inbox', to_name: 'Browser QA', attachments: JSON.stringify([receivedFile]), attachment_manifest: JSON.stringify([receivedManifest]), created_at: now });
   const publicMessageId = randomUUID(), publicRecipient = `optout-${runId}@example.test`;
   const openToken = randomBytes(32).toString('hex'), unsubscribeToken = randomBytes(32).toString('hex'), clickToken = randomBytes(32).toString('hex');
   await db('messages').insert({
@@ -305,7 +309,7 @@ try {
     await dialog.getByLabel('Subject', { exact: true }).fill('Browser QA personal message');
     await dialog.getByLabel('Message', { exact: true }).fill('An isolated normal email queued while live sending is disabled.');
     const processed = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/inbox/process');
-    const queued = await mutate(page, 'POST', '/inbox/compose', () => dialog.getByRole('button', { name: 'Queue message', exact: true }).click());
+    const queued = await mutate(page, 'POST', '/inbox/compose', () => dialog.getByRole('button', { name: 'Send message', exact: true }).click());
     await expect(dialog).not.toBeVisible();
     expect((await processed).status()).toBe(200);
     const job = await db('jobs').where({ id: queued.job_id }).first();
@@ -325,9 +329,9 @@ try {
     await page.goto(`http://127.0.0.1:3100/inbox/${inboundMessageId}`, { waitUntil: 'networkidle' });
     await expect(page.getByRole('button', { name: /match.*contact/i })).toHaveCount(0);
     await page.getByRole('textbox', { name: 'Reply message', exact: true }).fill('A normal contactless reply, queued only.');
-    await expect(page.getByRole('button', { name: 'Queue reply', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Send reply', exact: true })).toBeEnabled();
     const processed = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/inbox/process');
-    const queued = await mutate(page, 'POST', `/inbox/${inboundMessageId}/reply`, () => page.getByRole('button', { name: 'Queue reply', exact: true }).click());
+    const queued = await mutate(page, 'POST', `/inbox/${inboundMessageId}/reply`, () => page.getByRole('button', { name: 'Send reply', exact: true }).click());
     expect((await processed).status()).toBe(200);
     const job = await db('jobs').where({ id: queued.job_id }).first();
     const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
@@ -336,6 +340,78 @@ try {
     expect(await db('contacts').where({ email: inboxSender })).toHaveLength(0);
     expect(await db('send_attempts')).toHaveLength(0);
     await page.screenshot({ path: path.join(artifacts, 'crm-inbox-contactless.png'), fullPage: true });
+  });
+  await check('Email composer formats content, saves an attachment draft, resumes it and queues a signature with tracking', async () => {
+    await page.goto('http://127.0.0.1:3100/inbox', { waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: 'New message', exact: true }).click();
+    let dialog = page.getByRole('dialog', { name: 'New message', exact: true });
+    await dialog.getByLabel('From mailbox', { exact: true }).selectOption(composeMailboxId);
+    await dialog.getByLabel('To email', { exact: true }).fill(`draft-person-${runId}@example.test`);
+    await dialog.getByLabel('Subject', { exact: true }).fill(`Formatted proposal ${runId}`);
+    const editor = dialog.getByRole('textbox', { name: 'Message', exact: true });
+    await editor.fill('Hello from the formatted composer.');
+    await editor.selectText();
+    await editor.evaluate(node => { const selected = window.getSelection(), range = document.createRange(); range.selectNodeContents(node); selected.removeAllRanges(); selected.addRange(range); node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); });
+    await dialog.getByRole('button', { name: 'Bold', exact: true }).click();
+    await expect(editor.locator('strong')).toHaveText('Hello from the formatted composer.');
+    await dialog.getByRole('button', { name: 'Bold', exact: true }).click();
+    await expect(editor.locator('strong')).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Bold', exact: true }).click();
+    await expect(editor.locator('strong')).toHaveText('Hello from the formatted composer.');
+    await dialog.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'proposal.txt', mimeType: 'text/plain', buffer: Buffer.from('Private isolated browser document.') });
+    await expect(dialog.getByText('proposal.txt', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('checkbox', { name: 'Track opens', exact: true })).toBeChecked();
+    await dialog.getByRole('button', { name: 'Edit signature', exact: true }).click();
+    await dialog.getByLabel('Email signature', { exact: true }).fill('Jamie at the agency');
+    const saved = await mutate(page, 'POST', '/inbox/drafts', () => dialog.getByRole('button', { name: 'Save draft & close', exact: true }).click());
+    await expect(dialog).not.toBeVisible();
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: /^Drafts/ }).click();
+    await page.getByRole('button').filter({ hasText: `Formatted proposal ${runId}` }).click();
+    dialog = page.getByRole('dialog', { name: 'New message', exact: true });
+    await expect(dialog.getByRole('textbox', { name: 'Message', exact: true })).toHaveText('Hello from the formatted composer.');
+    await expect(dialog.getByText('proposal.txt', { exact: true })).toBeVisible();
+    await page.screenshot({ path: path.join(artifacts, 'crm-mail-composer-desktop.png'), fullPage: true });
+    const queued = await mutate(page, 'POST', '/inbox/compose', () => dialog.getByRole('button', { name: 'Send message', exact: true }).click());
+    const job = await db('jobs').where({ id: queued.job_id }).first();
+    const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
+    expect(payload).toMatchObject({ open_tracking: true, content: { body_html: expect.stringContaining('<strong>'), body_text: expect.stringContaining('Jamie at the agency') }, attachments: [{ filename: 'proposal.txt' }] });
+    expect(JSON.stringify(job.payload)).not.toContain('Private isolated browser document.');
+    expect(await db('mail_drafts').where({ id: saved.id })).toHaveLength(0);
+    expect(await db('send_attempts')).toHaveLength(0);
+  });
+  await check('Sender profile, attachment download, Forward and expanded Reply use the original email context', async () => {
+    await page.goto(`http://127.0.0.1:3100/inbox/${inboundMessageId}`, { waitUntil: 'networkidle' });
+    const profile = page.locator('.mail-person').first();
+    await expect(profile.locator('summary strong')).toHaveText('Jamie Inbox');
+    await profile.locator('summary').click();
+    await expect(profile.locator('.mail-person-card')).toContainText(inboxSender);
+    await profile.locator('summary').click();
+    const downloaded = page.waitForEvent('download');
+    await page.getByRole('link', { name: /conversation\.pdf/ }).click();
+    expect((await downloaded).suggestedFilename()).toBe('conversation.pdf');
+    await page.getByRole('button', { name: `Forward Contactless inbox QA ${runId}`, exact: true }).click();
+    let dialog = page.getByRole('dialog', { name: 'Forward message', exact: true });
+    await expect(dialog.getByLabel('Subject', { exact: true })).toHaveValue(`Fwd: Contactless inbox QA ${runId}`);
+    await expect(dialog.getByText('conversation.pdf', { exact: true })).toBeVisible();
+    await dialog.getByLabel('To email', { exact: true }).fill(`forward-${runId}@example.test`);
+    const forwarded = await mutate(page, 'POST', '/inbox/compose', () => dialog.getByRole('button', { name: 'Send message', exact: true }).click());
+    let queuedJob = await db('jobs').where({ id: forwarded.job_id }).first();
+    let payload = typeof queuedJob.payload === 'string' ? JSON.parse(queuedJob.payload) : queuedJob.payload;
+    expect(payload.is_reply).toBeUndefined();expect(payload.in_reply_to).toBeUndefined();expect(payload.attachments).toHaveLength(1);
+    await page.getByRole('button', { name: 'Reply to Jamie Inbox', exact: true }).click();
+    await expect(page.getByRole('textbox', { name: 'Reply message', exact: true })).toBeFocused();
+    await page.getByRole('textbox', { name: 'Reply message', exact: true }).fill('An expanded reply keeps the original message anchor.');
+    await page.getByRole('button', { name: 'Expand reply with formatting and attachments', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Reply to email', exact: true });
+    await expect(dialog.getByLabel('To email', { exact: true })).toHaveValue(inboxSender);
+    await expect(dialog.getByLabel('To email', { exact: true })).toHaveAttribute('readonly', '');
+    await expect(dialog.getByRole('textbox', { name: 'Message', exact: true })).toHaveText('An expanded reply keeps the original message anchor.');
+    const replied = await mutate(page, 'POST', `/inbox/${inboundMessageId}/reply`, () => dialog.getByRole('button', { name: 'Send message', exact: true }).click());
+    queuedJob = await db('jobs').where({ id: replied.job_id }).first();payload = typeof queuedJob.payload === 'string' ? JSON.parse(queuedJob.payload) : queuedJob.payload;
+    expect(payload).toMatchObject({ is_reply: true, reply_source_id: inboundMessageId, manual_recipient: inboxSender });
+    await page.screenshot({ path: path.join(artifacts, 'crm-mail-profile-and-reply.png'), fullPage: true });
+    expect(await db('send_attempts')).toHaveLength(0);
   });
   await check('Inbox refreshes incoming mail, preserves drafts through failures, and pauses hidden polling without overlap', async () => {
     await page.goto(`http://127.0.0.1:3100/inbox/${inboundMessageId}`, { waitUntil: 'networkidle' });
@@ -456,7 +532,7 @@ try {
     await expect(draft).toHaveValue('Keep this draft while I read older replies.');
     await page.getByRole('button', { name: 'New messages: jump to latest', exact: true }).click();
     await expect.poll(() => reader.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(2);
-    const queued = await mutate(page, 'POST', `/inbox/${newReplyId}/reply`, () => page.getByRole('button', { name: 'Queue reply', exact: true }).click());
+    const queued = await mutate(page, 'POST', `/inbox/${newReplyId}/reply`, () => page.getByRole('button', { name: 'Send reply', exact: true }).click());
     const job = await db('jobs').where({ id: queued.job_id }).first();
     expect(typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload).toMatchObject({ reply_source_id: newReplyId });
     expect(await db('send_attempts')).toHaveLength(0);
@@ -485,6 +561,7 @@ try {
     const dialog = page.getByRole('dialog', { name: 'New message', exact: true });
     await expect(dialog.getByLabel('To email', { exact: true })).toBeVisible();
     await expect(dialog.getByLabel('Message', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Send message', exact: true })).toBeInViewport();
     await noPageOverflow(page, '390px Inbox compose');
     await page.screenshot({ path: path.join(artifacts, 'crm-inbox-compose-mobile.png'), fullPage: true });
     await dialog.getByRole('button', { name: 'Close dialog' }).click();

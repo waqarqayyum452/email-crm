@@ -7,6 +7,7 @@ import { contactRouter,stageRouter,taskRouter,suppressionRouter } from './contac
 import { importRouter } from './imports.js';
 import { reportingRouter } from './reporting.js';
 import { campaignRouter,templateRouter,inboxRouter } from './campaigns.js';
+import { mailToolsRouter } from './mail-tools.js';
 import { publicRouter } from './tracking.js';
 import { runWorker } from './worker.js';
 import { secureEqual } from './lib/crypto.js';
@@ -20,7 +21,7 @@ const routes=[
   ['/api/auth',authRouter],['/api/users',userRouter],['/api/settings',settingsRouter],
   ['/api/accounts',accountRouter],['/api/contacts',contactRouter],['/api/stages',stageRouter],
   ['/api/tasks',taskRouter],['/api/suppressions',suppressionRouter],['/api/imports',importRouter],
-  ['/api/campaigns',campaignRouter],['/api/templates',templateRouter],['/api/inbox',inboxRouter],['/api',reportingRouter],
+  ['/api/campaigns',campaignRouter],['/api/templates',templateRouter],['/api/inbox',mailToolsRouter],['/api/inbox',inboxRouter],['/api',reportingRouter],
 ] as const;
 
 function securityHeaders(res:HttpResponse){
@@ -50,7 +51,8 @@ export async function handleRequest(request:globalThis.Request,options?:{remoteA
       res.set('Cache-Control','no-store');
       await runHandlers([apiCors],req,res);
       if(res.headersSent)return res.toResponse(req.method);
-      await parseBody(request,req,2200*1024);
+      const mailUpload=/^\/api\/inbox\/(?:compose|drafts(?:\/[^/]+)?|[^/]+\/reply)\/?$/.test(req.path);
+      await parseBody(request,req,mailUpload?8*1024*1024:2200*1024);
       await runHandlers([loadSession,csrfProtect],req,res);
       if(!res.headersSent){let matched=false;for(const [prefix,router] of routes){if(await router.dispatch(req,res,prefix)){matched=true;break;}}if(!matched)throw new HttpError(404,'API route not found.');}
     } else if(req.path==='/internal/tick'&&req.method==='POST'){

@@ -2,14 +2,15 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowDown, CheckCircle2, ChevronDown, Mail, MessageCircle, PenSquare, RefreshCw, Search, Send, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, ArrowDown, CheckCircle2, ChevronDown, Mail, MessageCircle, PenSquare, RefreshCw, Search, Send, ShieldCheck, Reply, Forward, Paperclip, Eye, FileText, Maximize2 } from 'lucide-react';
 import { api, body, date, initials, list, patch, useResource, type Row } from '../api';
 import { useWorkspace } from '../context';
 import { Badge, Button, Empty, Field, FormError, HtmlPreview, Modal, PageHeader, Panel, Resource, Status } from '../ui';
+import { MailComposer, fileSize } from '../mail-compose';
 
 const validEmail = (value: string) => /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(value) && value.length <= 254;
-const readyMailbox = (account: Row) => account.status === 'active' && Boolean(account.verified_at);
 const participant = (message: Row) => String(message.direction === 'outbound' ? message.to_email || '' : message.from_email || '').trim().toLowerCase();
+const personName = (message: Row) => (message.direction === 'outbound' ? message.to_name : message.from_name) || participant(message);
 const messageStatus = (message: Row) => message.classification && !['unmatched', 'outbound'].includes(message.classification) ? message.classification : message.direction === 'outbound' ? 'outgoing' : 'incoming';
 const liveInbox = { pollIntervalMs: 10000, refreshOnFocus: true, keepPreviousData: true };
 const liveMailboxes = { pollIntervalMs: 30000, refreshOnFocus: true, keepPreviousData: true };
@@ -25,7 +26,10 @@ function SendStatus({ value }: { value: string }) {
   return state ? <Badge tone={state.tone}>{state.label}</Badge> : <Status value={value} />;
 }
 function MessageStatus({ message }: { message: Row }) {
-  return message.direction === 'outbound' && message.send_status ? <SendStatus value={message.send_status} /> : <Status value={messageStatus(message)} />;
+  return <span className="mail-status-group">{message.direction === 'outbound' && message.send_status ? <SendStatus value={message.send_status} /> : <Status value={messageStatus(message)} />}{message.direction === 'outbound' && Boolean(message.open_tracking) && <span className={`mail-open-status ${message.open_count ? 'recorded' : ''}`} title={`Image loads are estimates, not proof of reading.${message.first_opened_at?' First recorded: '+date(message.first_opened_at,true):''}`}><Eye size={13}/>{message.open_count ? 'Open recorded' : 'No open recorded'}</span>}</span>;
+}
+function SenderIdentity({ name, email }: { name: string; email: string }) {
+  return <details className="mail-person"><summary><span className="avatar avatar-small">{initials(name || email)}</span><span><strong>{name || email}</strong><small>{name ? email : 'Sender details'}</small></span><ChevronDown size={12}/></summary><div className="mail-person-card"><strong>{name || email}</strong><span>{email}</span></div></details>;
 }
 function processInbox(mode: 'inbox' | 'sync', refresh: () => void, notify: (message: string, error?: boolean) => void) {
   void api('/inbox/process', body({ mode })).then(refresh).catch(() => {
@@ -42,9 +46,12 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
   const selected = messageId;
   const [busy, setBusy] = useState(false);
   const [composing, setComposing] = useState(false);
+  const [draft, setDraft] = useState<Row>({});
+  const [showDrafts, setShowDrafts] = useState(false);
   const query = new URLSearchParams({ ...(classification ? { classification } : {}), ...(account ? { account_id: account } : {}) });
   const resource = useResource(`/inbox?${query}`, revision, liveInbox);
   const outbox = useResource('/inbox/outbox', revision, liveInbox);
+  const drafts = useResource('/inbox/drafts', revision, liveInbox);
   const mailboxResource = useResource('/accounts', revision, liveMailboxes);
   const currentAccounts = mailboxResource.data ? list(mailboxResource.data) : accounts;
   const rows = list(resource.data).filter(m => `${m.from_email} ${m.subject} ${m.latest_subject || ''} ${m.to_email}`.toLowerCase().includes(search.toLowerCase()));
@@ -60,7 +67,7 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
           if (targets.length) { resource.reload(); notify('Mailbox check requested. New messages will appear automatically after syncing.'); if (can('inbox:write')) processInbox('sync', refresh, notify); }
         } catch {} finally { setBusy(false); }
       }}><RefreshCw size={16} />Sync inbox</Button>}
-      {can('inbox:write') && <Button onClick={() => setComposing(true)}><PenSquare size={16} />New message</Button>}
+      {can('inbox:write') && <Button onClick={() => { setDraft({account_id:account});setComposing(true); }}><PenSquare size={16} />New message</Button>}
     </>} />
     <div className="inbox-sync-note"><span className="tiny-dot" /><span>Last sync: {date(currentAccounts.filter(a => !account || a.id === account).map(a => a.last_successful_sync_at).filter(Boolean).sort().at(-1), true)}</span><span>Refreshes automatically every 10 seconds.</span><span>Remote images are blocked in message previews.</span></div>
     {(resource.refreshError || outbox.error || outbox.refreshError || mailboxResource.error || mailboxResource.refreshError) && <p className="panel-note" role="status">Live updates are temporarily unavailable. Retrying automatically; your messages and drafts are kept.</p>}
@@ -75,63 +82,26 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
       <div className="inbox-layout">
         <aside className="inbox-sidebar" aria-label="Mailbox conversations">
           <section aria-label="Outbox" className="inbox-sidebar-header"><details className="inbox-outbox"><summary><div><strong>Outbox</strong><p>Sending progress and messages needing attention</p></div><Badge>{pending.length}</Badge><ChevronDown size={17} /></summary><div className="outbox-items">{pending.length ? pending.map(job => <div className="conversation-item" key={job.id}><div className="conversation-top"><strong>{job.recipient}</strong><time>{date(job.updated_at || job.created_at, true)}</time></div><h3>{job.subject || '(No subject)'}</h3>{job.last_error && <p>{job.last_error}</p>}<SendStatus value={job.status} />{['held', 'failed'].includes(job.status) && can('system:write') && <p><Link href="/health">Review in System health</Link></p>}</div>) : <p className="panel-note">No queued messages.</p>}</div></details></section>
-          <div className="conversation-list-label"><strong>Conversations</strong><span>{rows.length}</span></div>
-          <div className="conversation-list" role="region" aria-label="Conversation list" tabIndex={0}><Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => {
+          <div className="conversation-list-label"><button type="button" className={!showDrafts?'selected':''} onClick={()=>setShowDrafts(false)}>Inbox <span>{rows.length}</span></button><button type="button" className={showDrafts?'selected':''} onClick={()=>setShowDrafts(true)}><FileText size={13}/>Drafts <span>{list(drafts.data).length}</span></button></div>
+          <div className="conversation-list" role="region" aria-label="Conversation list" tabIndex={0}>{showDrafts?<Resource {...drafts} retry={drafts.reload}>{list(drafts.data).length?list(drafts.data).map(item=><button type="button" key={item.id} className="conversation-item mail-draft-item" onClick={async()=>{try{setDraft(await api<Row>(`/inbox/drafts/${item.id}`));setComposing(true);}catch(error:any){notify(error.message,true);}}}><strong>{item.to || 'No recipient'}</strong><h3>{item.subject}</h3><p>Draft · {date(item.updated_at,true)}</p></button>):<Empty title="No saved drafts" description="Save a draft from the email composer and return to it here."/>}</Resource>:<Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => {
             const active = selected === m.id || m.message_ids?.includes(selected);
             return <Link className={`conversation-item ${active ? 'active' : ''}`} key={m.thread_id || m.id} href={`/inbox/${m.id}`} scroll={false} aria-current={active ? 'page' : undefined}>
-              <div className="conversation-top"><span className="avatar contact-avatar">{initials(participant(m) || 'Mail')}</span><strong>{participant(m) || 'Message'}</strong><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time></div>
+              <div className="conversation-top"><span className="avatar contact-avatar">{initials(personName(m) || 'Mail')}</span><strong title={participant(m)}>{personName(m) || 'Message'}</strong><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time></div>
               <div className="conversation-subject"><h3>{m.subject || '(No subject)'}</h3>{m.message_count > 1 && <span className="conversation-count" aria-label={`${m.message_count} messages in conversation`}>{m.message_count}</span>}</div><div className="conversation-preview"><p>{m.preview || 'Open to read this conversation.'}</p>{(m.send_status || !['unmatched', 'outbound'].includes(m.classification)) && <MessageStatus message={m} />}</div>
             </Link>;
-          }) : <Empty title="A little quiet, for now." description="Synced messages and your conversations will appear here." />}</Resource></div>
+          }) : <Empty title="A little quiet, for now." description="Synced messages and your conversations will appear here." />}</Resource>}</div>
         </aside>
         <section className="conversation-detail">{selected ? <Conversation key={selected} id={selected} accounts={currentAccounts} /> : <div className="inbox-welcome">
           <div className="inbox-welcome-art"><MessageCircle size={36} /><Mail size={23} /></div><h2>Good conversations live here.</h2><p>Select a message to read and reply, or choose New message to start a conversation.</p><div><ShieldCheck size={16} />Human replies stop automated follow-ups.</div>
         </div>}</section>
       </div>
     </Panel>
-    {composing && can('inbox:write') && <NewMessage selectedAccount={account} onClose={() => setComposing(false)} />}
+    {composing && can('inbox:write') && <MailComposer initial={draft} onClose={() => setComposing(false)} onQueued={refresh} />}
   </div>;
 }
 
-function NewMessage({ selectedAccount, onClose }: { selectedAccount: string; onClose: () => void }) {
-  const { accounts, can, act, refresh, notify } = useWorkspace();
-  const mailboxes = accounts.filter(readyMailbox);
-  const preferredAccount = mailboxes.find(a => a.id === selectedAccount) || mailboxes.find(a => Number(a.is_default) === 1) || mailboxes[0];
-  const [account, setAccount] = useState<string>(preferredAccount?.id || '');
-  const [to, setTo] = useState('');
-  const [subject, setSubject] = useState('');
-  const [message, setMessage] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const selectedMailbox = mailboxes.find(a => a.id === account);
-
-  useEffect(() => {
-    if (!mailboxes.some(a => a.id === account)) setAccount(preferredAccount?.id || '');
-  }, [account, preferredAccount?.id, accounts]);
-
-  return <Modal title="New message" description="Choose your mailbox and write directly to an email address." onClose={() => { if (!busy) onClose(); }} wide>
-    {!mailboxes.length ? <Empty title="Connect a sending mailbox" description={can('settings:write') ? 'Add a mailbox, validate its connection, and set its status to Active before writing a message.' : 'Ask your workspace owner to connect, validate, and activate a sending mailbox.'} action={<Link className="button secondary" href="/settings/accounts" onClick={onClose}>Open mailbox settings</Link>} /> : <form className="inbox-new-message" onSubmit={async e => {
-      e.preventDefault();
-      if (!selectedMailbox || !validEmail(to.trim())) return;
-      setBusy(true); setError('');
-      try {
-        await act('/inbox/compose', body({ account_id: account, to: to.trim(), subject: subject.trim(), body_text: message }), `Message added to Outbox for ${to.trim()}. Its sending status updates automatically.`);
-        onClose();
-        processInbox('inbox', refresh, notify);
-      } catch (err: any) { setError(err.message); } finally { setBusy(false); }
-    }}>
-      <Field label="From mailbox"><select required value={account} disabled={busy} onChange={e => setAccount(e.target.value)}>{mailboxes.map(a => <option key={a.id} value={a.id}>{a.label} · {a.email}</option>)}</select></Field>
-      <Field label="To email"><input required type="email" maxLength={254} value={to} disabled={busy} onChange={e => setTo(e.target.value)} placeholder="recipient@example.com" autoComplete="email" /></Field>
-      <Field label="Subject"><input required maxLength={998} value={subject} disabled={busy} onChange={e => setSubject(e.target.value)} placeholder="Subject" /></Field>
-      <Field label="Message"><textarea required rows={9} maxLength={100000} value={message} disabled={busy} onChange={e => setMessage(e.target.value)} placeholder="Write your message…" /></Field>
-      <FormError error={error} />
-      <div className="form-footer"><Button type="button" variant="secondary" disabled={busy} onClick={onClose}>Cancel</Button><Button type="submit" busy={busy} disabled={!selectedMailbox || !validEmail(to.trim()) || !subject.trim() || !message.trim()}><Send size={15} />Queue message</Button></div>
-    </form>}
-  </Modal>;
-}
-
 function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
-  const { revision, users, can, act, refresh, notify } = useWorkspace();
+  const { revision, users, settings, can, act, refresh, notify } = useWorkspace();
   const resource = useResource(`/inbox/${id}`, revision, liveInbox);
   const data = resource.data || {};
   const message = data.message || data;
@@ -140,6 +110,10 @@ function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [queued, setQueued] = useState('');
+  const [composer, setComposer] = useState<Row|null>(null);
+  const [replyTo, setReplyTo] = useState('');
+  const [trackOpens, setTrackOpens] = useState(true);
+  const replyRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
   const previousLast = useRef('');
@@ -158,7 +132,7 @@ function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
     observer.observe(node);
     return () => observer.disconnect();
   }, [Boolean(resource.data)]);
-  const replySource = thread.find((item: Row) => item.id === data.reply_message_id) || thread.at(-1) || message;
+  const replySource = thread.find((item: Row) => item.id === (replyTo || data.reply_message_id)) || thread.at(-1) || message;
   const replyRecipient = participant(replySource);
   const mailbox = accounts.find(a => a.id === message.account_id);
 
@@ -167,14 +141,16 @@ function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
     <div className="conversation-heading">
       <Link href="/inbox" className="text-link conversation-back"><ArrowLeft size={17} />All conversations</Link>
       <div className="conversation-title"><h2>{data.conversation_subject || message.subject || '(No subject)'}</h2><MessageStatus message={replySource} /></div>
-      <p className="conversation-with">With <strong>{replyRecipient || 'No reply address available'}</strong></p>
+      <p className="conversation-with">With <strong>{personName(replySource) || 'No reply address available'}</strong> {personName(replySource)!==replyRecipient&&<span>&lt;{replyRecipient}&gt;</span>}</p>
       <details className="conversation-options"><summary>Details <ChevronDown size={14} /></summary><p>Mailbox: {mailbox?.email || (message.direction === 'outbound' ? message.from_email : message.to_email)}</p>
       {can('inbox:write') && <div className="conversation-management"><Field label="Assigned teammate"><select value={message.assigned_to || ''} onChange={e => { act(`/inbox/${id}`, patch({ assigned_to: e.target.value || null }), 'Conversation assignment updated.').catch(() => {}); }}><option value="">Unassigned</option>{users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select></Field></div>}</details>
     </div>
     <div className="thread-messages" ref={scrollRef} role="region" aria-label="Conversation messages" tabIndex={0} onScroll={() => { const node = scrollRef.current; if (node) { followLatest.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80; if (followLatest.current) setNewMessages(false); } }}>{thread.map((m: Row, i: number) => <article className={`thread-message ${m.direction === 'outbound' ? 'outbound' : ''}`} key={m.id || i}>
-      <div className="thread-message-heading"><span className="avatar avatar-small">{initials(m.from_name || m.from_email || 'SD')}</span><div><strong>{m.from_name || m.from_email || 'Agency mailbox'}</strong><small>To {m.to_email || 'recipient'}</small>{m.direction === 'outbound' && <small><MessageStatus message={m} /></small>}</div><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time></div>
+      <div className="thread-message-heading"><SenderIdentity name={m.from_name||''} email={m.from_email||''}/><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time>{can('inbox:write')&&<><button type="button" className="icon-button" aria-label={`Reply to ${m.from_name||m.from_email}`} title="Reply" onClick={()=>{setReplyTo(m.id);replyRef.current?.focus();}}><Reply size={16}/></button><button type="button" className="icon-button" aria-label={`Forward ${m.subject}`} title="Forward" onClick={async()=>{try{const attachments=await Promise.all((m.attachments||[]).filter((file:Row)=>!file.unavailable).map(async(file:Row)=>{const response=await fetch(`/api/inbox/${m.id}/attachments/${file.id}`,{credentials:'same-origin'});if(!response.ok)throw new Error('An attachment could not be included.');const blob=await response.blob();const content_base64=await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(blob);});return {filename:file.filename,content_type:file.content_type,content_base64};}));setComposer({forward:true,account_id:m.account_id,to:'',subject:/^fwd:/i.test(m.subject)?m.subject:`Fwd: ${m.subject}`,body_text:`\n\n---------- Forwarded message ----------\nFrom: ${m.from_name||m.from_email} <${m.from_email}>\nDate: ${date(m.received_at,true)}\nSubject: ${m.subject}\nTo: ${m.to_email}\n\n${m.body_text}`,attachments});}catch(error:any){notify(error.message,true);}}}><Forward size={16}/></button></>}</div>
+      <div className="message-delivery-line"><span>To {m.to_name||m.to_email}</span>{m.direction==='outbound'&&<MessageStatus message={m}/>}</div>
       {m.campaign_id && data.contact && m.contact_id === data.contact.id && String(data.contact.email || '').trim().toLowerCase() === participant(m) && <ReviewReply message={m} />}
       <HtmlPreview html={m.body_html || m.html} text={m.body_text || m.text} />
+      {m.attachments?.length>0&&<div className="message-attachments">{m.attachments.map((file:Row)=>file.unavailable?<span key={file.id}><Paperclip size={14}/>{file.filename} · Open in webmail</span>:<a key={file.id} href={`/api/inbox/${m.id}/attachments/${file.id}`} download><Paperclip size={14}/><strong>{file.filename}</strong><small>{fileSize(file.size)}</small></a>)}</div>}
     </article>)}</div>
     {newMessages && <button className="new-messages-button" onClick={scrollToLatest}><ArrowDown size={15} />New messages: jump to latest</button>}
     {can('inbox:write') && <form className="reply-composer" aria-label={`Reply to ${replyRecipient}`} onSubmit={async e => {
@@ -182,18 +158,19 @@ function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
       if (!message.id || !validEmail(replyRecipient)) return;
       setBusy(true); setError(''); setQueued('');
       try {
-        await act(`/inbox/${replySource.id}/reply`, body({ body_text: reply }));
+        await act(`/inbox/${replySource.id}/reply`, body({ body_text: reply, include_signature:true, open_tracking:trackOpens }));
         setQueued('Reply added to Outbox. Sending status updates automatically.');
         setReply('');
         processInbox('inbox', refresh, notify);
       } catch (err: any) { setError(err.message); } finally { setBusy(false); }
     }}>
-      <textarea aria-label="Reply message" rows={2} required maxLength={100000} disabled={busy || !validEmail(replyRecipient)} value={reply} onChange={e => setReply(e.target.value)} placeholder="Write a reply…" />
-      <div className="reply-footer"><Button type="submit" busy={busy} disabled={!message.id || !validEmail(replyRecipient) || !reply.trim()}><Send size={15} />Queue reply</Button></div>
+      <textarea ref={replyRef} aria-label="Reply message" rows={2} required maxLength={100000} disabled={busy || !validEmail(replyRecipient)} value={reply} onChange={e => setReply(e.target.value)} placeholder={`Reply to ${personName(replySource) || replyRecipient}…`} />
+      <div className="reply-footer"><button type="button" className="icon-button" aria-label="Expand reply with formatting and attachments" title="Formatting, attachments & signature" onClick={()=>setComposer({account_id:replySource.account_id,to:replyRecipient,subject:/^re:/i.test(replySource.subject)?replySource.subject:`Re: ${replySource.subject}`,reply_id:replySource.id,body_text:reply,signature:settings.signature||'',open_tracking:trackOpens})}><Paperclip size={16}/><Maximize2 size={13}/></button><button type="button" className={`icon-button ${trackOpens?'tracking-on':''}`} aria-label="Track opens for this reply" aria-pressed={trackOpens} title={trackOpens?'Open tracking on (estimated)':'Open tracking off'} onClick={()=>setTrackOpens(!trackOpens)}><Eye size={16}/></button><Button type="submit" busy={busy} disabled={!message.id || !validEmail(replyRecipient) || !reply.trim()}><Send size={15} />Send reply</Button></div>
       {!validEmail(replyRecipient) && <FormError error="This message has no valid reply address. Use New message to write to an email address." />}
       {queued && <div className="inbox-queue-confirmation" role="status"><CheckCircle2 size={16} /><span>{queued}</span></div>}
       <FormError error={error} />
     </form>}
+    {composer&&<MailComposer initial={composer} onClose={()=>setComposer(null)} onQueued={()=>{setReply('');refresh();}}/>}
   </Resource>;
 }
 

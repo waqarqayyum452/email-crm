@@ -304,10 +304,19 @@ try {
     await page.goto('http://127.0.0.1:3100/inbox', { waitUntil: 'networkidle' });
     await page.getByRole('button', { name: 'New message', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'New message', exact: true });
-    await dialog.getByLabel('From mailbox', { exact: true }).selectOption(composeMailboxId);
+    // Opening from All mailboxes must select the real default, not just display it.
+    await expect(dialog.getByLabel('From mailbox', { exact: true })).toHaveValue(composeMailboxId);
+    await expect(dialog.getByRole('button', { name: 'Send message', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('status')).toHaveText('Enter the recipient’s email address.');
+    await dialog.getByLabel('To email', { exact: true }).fill('invalid');
+    await expect(dialog.getByRole('status')).toHaveText('Enter a valid recipient email address.');
     await dialog.getByLabel('To email', { exact: true }).fill(recipient);
+    await expect(dialog.getByRole('status')).toHaveText('Add a subject.');
     await dialog.getByLabel('Subject', { exact: true }).fill('Browser QA personal message');
+    await expect(dialog.getByRole('status')).toHaveText('Write a message before sending.');
     await dialog.getByLabel('Message', { exact: true }).fill('An isolated normal email queued while live sending is disabled.');
+    await expect(dialog.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
+    await expect(dialog.getByRole('status')).toHaveCount(0);
     const processed = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/inbox/process');
     const queued = await mutate(page, 'POST', '/inbox/compose', () => dialog.getByRole('button', { name: 'Send message', exact: true }).click());
     await expect(dialog).not.toBeVisible();

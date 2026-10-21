@@ -45,7 +45,11 @@ export function MailComposer({ initial = {}, onClose, onQueued }: { initial?: Ro
   const { accounts, settings, act, notify } = useWorkspace();
   const mailboxes = accounts.filter(account=>account.status==='active'&&account.verified_at);
   const preferred = mailboxes.find(account=>account.id===initial.account_id) || mailboxes.find(account=>account.is_default) || mailboxes[0];
-  const [data, setData] = useState<Row>({ account_id: preferred?.id || '', to:'', subject:'', body_text:'', body_html:'', attachments:[], include_signature:true, signature:settings.signature || '', open_tracking:true, ...initial });
+  const [data, setData] = useState<Row>({ to:'', subject:'', body_text:'', body_html:'', attachments:[], include_signature:true, signature:settings.signature || '', open_tracking:true, ...initial, account_id: initial.reply_id ? initial.account_id || '' : preferred?.id || '' });
+  const fallbackMailboxId = preferred?.id || '';
+  useEffect(() => {
+    if (!data.account_id && !data.reply_id && fallbackMailboxId) setData(current => current.account_id || current.reply_id ? current : {...current, account_id:fallbackMailboxId});
+  }, [data.account_id, data.reply_id, fallbackMailboxId]);
   const [draftId, setDraftId] = useState(initial.id || '');
   const [busy, setBusy] = useState(false), [readingFiles, setReadingFiles] = useState(false), [error, setError] = useState(''), [signatureOpen, setSignatureOpen] = useState(false), [draftSaved, setDraftSaved] = useState(false);
   const field = (key: string, value: any) => { setData(current=>({...current,[key]:value})); setDraftSaved(false); };
@@ -64,6 +68,12 @@ export function MailComposer({ initial = {}, onClose, onQueued }: { initial?: Ro
     }catch(error:any){setError(error.message);}finally{setReadingFiles(false);}
   };
   const title = data.reply_id ? 'Reply to email' : initial.forward ? 'Forward message' : 'New message';
+  const sendHint = readingFiles ? 'Wait for attachments to finish loading.'
+    : !mailboxes.some(account=>account.id===data.account_id) ? 'Choose an active, validated From mailbox.'
+    : !data.to.trim() ? 'Enter the recipient’s email address.'
+    : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.to.trim()) ? 'Enter a valid recipient email address.'
+    : !data.subject.trim() ? 'Add a subject.'
+    : !data.body_text.trim() ? 'Write a message before sending.' : '';
   return <Modal title={title} description="Write an email from your connected mailbox." wide onClose={()=>{if(!busy&&!readingFiles)onClose();}}><form className="mail-compose" onSubmit={async event=>{
     event.preventDefault();setBusy(true);setError('');
     try {
@@ -72,7 +82,7 @@ export function MailComposer({ initial = {}, onClose, onQueued }: { initial?: Ro
       notify('Email added to Outbox. Sending progress updates automatically.');onClose();onQueued();void api('/inbox/process',body({mode:'inbox'})).then(onQueued).catch(()=>notify('Email is kept in Outbox for automatic processing.'));
     }catch(error:any){setError(error.message);}finally{setBusy(false);}
   }}><fieldset disabled={busy||readingFiles}>
-    <div className="compose-envelope"><Field label="From mailbox"><select required disabled={Boolean(data.reply_id)} value={data.account_id} onChange={event=>field('account_id',event.target.value)}>{mailboxes.map(account=><option key={account.id} value={account.id}>{account.sender_name || account.label} &lt;{account.email}&gt;</option>)}</select></Field>
+    <div className="compose-envelope"><Field label="From mailbox"><select required disabled={Boolean(data.reply_id)} value={data.account_id} onChange={event=>field('account_id',event.target.value)}><option value="" disabled>Choose a validated mailbox</option>{mailboxes.map(account=><option key={account.id} value={account.id}>{account.sender_name || account.label} &lt;{account.email}&gt;</option>)}</select></Field>
     <Field label="To email"><input type="email" required maxLength={254} readOnly={Boolean(data.reply_id)} value={data.to} onChange={event=>field('to',event.target.value)} autoComplete="email"/></Field>
     <Field label="Subject"><input required maxLength={998} readOnly={Boolean(data.reply_id)} value={data.subject} onChange={event=>field('subject',event.target.value)}/></Field></div>
     <RichMessage text={data.body_text} html={data.body_html} onChange={(text,html)=>{setData(current=>({...current,body_text:text,body_html:html}));setDraftSaved(false);}}/>
@@ -81,5 +91,5 @@ export function MailComposer({ initial = {}, onClose, onQueued }: { initial?: Ro
     {signatureOpen&&<Field label="Email signature"><textarea rows={3} maxLength={10000} value={data.signature} onChange={event=>field('signature',event.target.value)}/></Field>}
     {data.include_signature&&data.signature&&!signatureOpen&&<div className="compose-signature">{data.signature}</div>}
     <p className="mail-tracking-help">{data.open_tracking?'Opens are estimates, not proof of reading. Images blocked by the recipient cannot record an open.':'Open tracking is off for this email.'} Attachments: up to 10 files, 5 MB total.</p>
-    </fieldset><FormError error={error}/><div className="compose-footer"><Button type="submit" busy={busy} disabled={readingFiles||!data.account_id||!data.to.trim()||!data.subject.trim()||!data.body_text.trim()}><Send size={15}/>Send message</Button><Button type="button" variant="secondary" disabled={busy||readingFiles} onClick={()=>void saveDraft(true)}><Save size={15}/>{draftSaved?'Saved':'Save draft & close'}</Button>{draftId&&<button type="button" className="icon-button" aria-label="Discard draft" disabled={busy} onClick={async()=>{setBusy(true);setError('');try{await api(`/inbox/drafts/${draftId}`,patch({discard:true}));onQueued();onClose();}catch(error:any){setError(error.message);}finally{setBusy(false);}}}><Trash2 size={16}/></button>}<Button type="button" variant="ghost" disabled={busy||readingFiles} onClick={onClose}>Cancel</Button></div></form></Modal>;
+    </fieldset><FormError error={error}/>{sendHint&&<p id="compose-send-hint" className="mail-tracking-help" role="status">{sendHint}</p>}<div className="compose-footer"><Button type="submit" busy={busy} disabled={Boolean(sendHint)} aria-describedby={sendHint?"compose-send-hint":undefined}><Send size={15}/>Send message</Button><Button type="button" variant="secondary" disabled={busy||readingFiles} onClick={()=>void saveDraft(true)}><Save size={15}/>{draftSaved?'Saved':'Save draft & close'}</Button>{draftId&&<button type="button" className="icon-button" aria-label="Discard draft" disabled={busy} onClick={async()=>{setBusy(true);setError('');try{await api(`/inbox/drafts/${draftId}`,patch({discard:true}));onQueued();onClose();}catch(error:any){setError(error.message);}finally{setBusy(false);}}}><Trash2 size={16}/></button>}<Button type="button" variant="ghost" disabled={busy||readingFiles} onClick={onClose}>Cancel</Button></div></form></Modal>;
 }

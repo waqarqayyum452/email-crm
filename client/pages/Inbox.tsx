@@ -170,7 +170,7 @@ function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
       {queued && <div className="inbox-queue-confirmation" role="status"><CheckCircle2 size={16} /><span>{queued}</span></div>}
       <FormError error={error} />
     </form>}
-    {composer&&<MailComposer initial={composer} onClose={()=>setComposer(null)} onQueued={()=>{setReply('');refresh();}}/>}
+    {composer&&<MailComposer initial={composer} onClose={()=>setComposer(null)} onQueued={()=>{if(composer.reply_id)setReply(current=>current===composer.body_text?'':current);refresh();}}/>}
   </Resource>;
 }
 

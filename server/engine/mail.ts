@@ -1,3 +1,4 @@
+import { sanitizeFormattedEmail } from '../lib/html.js';
 import nodemailer from 'nodemailer';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
@@ -5,7 +6,7 @@ import { decryptSecret } from '../lib/crypto.js';
 import { validateMailTarget } from '../lib/mail-target.js';
 import { db, json, type Database } from '../db.js';
 import { id, normalizeEmail } from '../lib/util.js';
-import { classifyIncoming, referenceIds, checkpointRange, sanitizeEmail, deliveryReports } from './content.js';
+import { classifyIncoming, referenceIds, checkpointRange, deliveryReports } from './content.js';
 import { stopContact, suppressEmail } from './policy.js';
 import { ensureMailFeatures, saveMessageDetails, incomingAttachments } from './mail-features.js';
 
@@ -50,7 +51,7 @@ export async function ingestIncoming(account: any, parsed: any, uid: number, uid
   }
   if(classification==='delivery_failure'&&matched){const recipientContact=await trx('contacts').where({email:normalizeEmail(matched.to_email)}).first();contactId=recipientContact?.id||null;}
   if(classification==='delivery_failure'&&(!matched||!deliveryReports(parsed).some(report=>report.recipient===normalizeEmail(matched.to_email)&&report.status.startsWith('5.'))))classification='uncertain';
-  const message={id:id(),account_id:account.id,contact_id:contactId,campaign_id:matched?.campaign_id||null,enrollment_id:matched?.enrollment_id||null,direction:'inbound',message_id:messageId,in_reply_to:parsed.inReplyTo?String(parsed.inReplyTo).slice(0,254):null,references_json:JSON.stringify(referenceIds(parsed).slice(-100)),from_email:sender,to_email:account.email,subject:String(parsed.subject||'(No subject)').slice(0,998),body_text:String(parsed.text||'').slice(0,200000),body_html:parsed.html?sanitizeEmail(String(parsed.html).slice(0,300000)):null,classification,is_test:!!matched?.is_test,received_at:parsed.date instanceof Date&&!Number.isNaN(parsed.date.getTime())?parsed.date:new Date(),created_at:new Date()};
+  const message={id:id(),account_id:account.id,contact_id:contactId,campaign_id:matched?.campaign_id||null,enrollment_id:matched?.enrollment_id||null,direction:'inbound',message_id:messageId,in_reply_to:parsed.inReplyTo?String(parsed.inReplyTo).slice(0,254):null,references_json:JSON.stringify(referenceIds(parsed).slice(-100)),from_email:sender,to_email:account.email,subject:String(parsed.subject||'(No subject)').slice(0,998),body_text:String(parsed.text||'').slice(0,200000),body_html:parsed.html?sanitizeFormattedEmail(String(parsed.html).slice(0,300000),'stored'):null,classification,is_test:!!matched?.is_test,received_at:parsed.date instanceof Date&&!Number.isNaN(parsed.date.getTime())?parsed.date:new Date(),created_at:new Date()};
   await trx('messages').insert(message);
   await saveMessageDetails(message,{from_name:parsed.from?.value?.[0]?.name,to_name:account.sender_name,attachments:incomingAttachments(parsed)},trx);
   if(contactId&&classification==='human_reply'){
@@ -93,7 +94,7 @@ export async function syncMailbox(account: any, options: {deadline?:number; maxM
       if(Date.now()>deadline-3000){complete=false;break;}
       let parsed:any;
       if(item.size>8*1024*1024){parsed={messageId:item.envelope?.messageId,from:{value:item.envelope?.from||[]},subject:item.envelope?.subject||'',date:item.envelope?.date,headers:new Map([['auto-submitted','auto-generated']]),text:'This message exceeds the 8 MB download limit. Read it and its attachments in webmail.'};}
-      else{const full=await client.fetchOne(item.uid,{source:true},{uid:true});if(!full||!full.source)throw new Error('IMAP message disappeared before checkpoint');parsed=await simpleParser(full.source,{skipHtmlToText:true,skipTextToHtml:true,maxHtmlLengthToParse:300000});}
+      else{const full=await client.fetchOne(item.uid,{source:true},{uid:true});if(!full||!full.source)throw new Error('IMAP message disappeared before checkpoint');parsed=await simpleParser(full.source,{skipHtmlToText:true,skipTextToHtml:true,maxHtmlLengthToParse:300000,skipImageLinks:true});}
       await db.transaction(async trx=>{
         // Global send lock ensures detected replies are applied before any later reservation.
         await trx('business_settings').where({id:'agency'}).forUpdate().first();

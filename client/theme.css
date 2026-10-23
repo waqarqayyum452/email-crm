@@ -743,3 +743,13 @@ button.mail-open-status:hover { color: #244cbd; }
 
 .spam-view-note { margin: 0; padding: 7px 12px; font-size: 11px; line-height: 1.5; color: #617085; background: #fafbfe; border-bottom: 1px solid #e5edf2; }
 .conversation-options .spam-folder-action { margin-top: 8px; min-height: 30px; padding: 4px 8px; font-size: 12px; }
+
+.mail-rich-input { font-family: Arial, sans-serif; white-space: normal; }
+.mail-rich-input p { margin: 0 0 12px; }
+.mail-rich-input a { color: #1a56b0; text-decoration: underline !important; cursor: text; }
+.mail-rich-input img { max-width: 100%; height: auto; }
+.inline-image-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 10px; border-top: 1px solid #e5ecef; font-size: 12px; color: #526176; }
+.inline-image-list > span { display: inline-flex; align-items: center; gap: 5px; }
+
+.remote-image-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 14px; font-size: 12px; background: #f5f8ff; color: #526176; flex-shrink: 0; }
+.remote-image-notice button { border: 0; background: none; color: #315bba; text-decoration: underline; font: inherit; cursor: pointer; }

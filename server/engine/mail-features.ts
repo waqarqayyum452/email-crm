@@ -2,8 +2,10 @@ import { z } from 'zod';
 import { db, json, type Database } from '../db.js';
 import { encryptSecret, decryptSecret } from '../lib/crypto.js';
 import { HttpError, id } from '../lib/util.js';
-import { escapeHtml, sanitizeEmail } from './content.js';
+import { escapeHtml } from './content.js';
 import { up } from '../migrations/002_mail_features.js';
+import { sanitizeFormattedEmail } from '../lib/html.js';
+import { cidPattern } from '../../shared/email-format.js';
 
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 10;
@@ -16,7 +18,24 @@ export async function ensureMailFeatures() {
 }
 export const filename = (value: string) => value.replace(/[\\/\x00-\x1f\x7f]/g, '_').replace(/^\.+/, '').trim().slice(0, 180) || 'attachment';
 const attachmentSchema = z.object({ filename: z.string().min(1).max(180), content_type: z.string().regex(/^[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+$/).max(100), content_base64: z.string().max(Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4) }).strict();
-export type MailFile = { id: string; filename: string; content_type: string; size: number; encrypted_content?: string; unavailable?: boolean };
+export type MailFile = { id: string; filename: string; content_type: string; size: number; encrypted_content?: string; unavailable?: boolean; cid?: string; disposition?: 'inline' };
+export function rasterType(bytes:Buffer):string|null {
+  if(bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))return 'image/png';
+  if(bytes[0]===255&&bytes[1]===216&&bytes[2]===255)return 'image/jpeg';
+  if(/^GIF8[79]a$/.test(bytes.subarray(0,6).toString('ascii')))return 'image/gif';
+  if(bytes.subarray(0,4).toString()==='RIFF'&&bytes.subarray(8,12).toString()==='WEBP')return 'image/webp';
+  return null;
+}
+const inlineImageSchema=attachmentSchema.extend({cid:z.string().regex(cidPattern),content_type:z.enum(['image/png','image/jpeg','image/gif','image/webp'])}).strict();
+export function encryptMailFiles(attachments:unknown,inlineImages:unknown=[]):MailFile[]{
+  const images=z.array(inlineImageSchema).max(MAX_ATTACHMENTS).parse(inlineImages||[]);
+  const files=encryptAttachments(attachments);
+  if(files.length+images.length>MAX_ATTACHMENTS)throw new HttpError(400,'Use up to 10 files including inline images.');
+  if(new Set(images.map(image=>image.cid)).size!==images.length)throw new HttpError(400,'Inline image IDs must be unique.');
+  for(const image of images){const [file]=encryptAttachments([{filename:image.filename,content_type:image.content_type,content_base64:image.content_base64}]);if(rasterType(Buffer.from(image.content_base64,'base64'))!==image.content_type)throw new HttpError(400,'Inline images must contain valid PNG, JPEG, GIF or WebP data.');files.push({...file,cid:image.cid,disposition:'inline'});}
+  if(files.reduce((sum,file)=>sum+file.size,0)>MAX_ATTACHMENT_BYTES)throw new HttpError(400,'Files and inline images must total 5 MB or less.');
+  return files;
+}
 export function encryptAttachments(value: unknown): MailFile[] {
   const files = z.array(attachmentSchema).max(MAX_ATTACHMENTS).parse(value || []);
   let total = 0;
@@ -31,28 +50,42 @@ export function encryptAttachments(value: unknown): MailFile[] {
 }
 export const safeFiles = (value: unknown) => json<MailFile[]>(value, []).map(({ encrypted_content, ...file }) => file);
 export function smtpAttachments(files: MailFile[]) {
-  return files.filter(file => file.encrypted_content).map(file => ({ filename: filename(file.filename), contentType: file.content_type, contentDisposition: 'attachment' as const, content: Buffer.from(decryptSecret(file.encrypted_content!), 'base64') }));
+  return files.filter(file => file.encrypted_content).map(file => ({ filename: filename(file.filename), contentType: file.content_type, contentDisposition: file.disposition==='inline'&&file.cid?'inline' as const:'attachment' as const, ...(file.disposition==='inline'&&file.cid?{cid:file.cid}:{}),content: Buffer.from(decryptSecret(file.encrypted_content!), 'base64') }));
 }
 export function incomingAttachments(parsed: any): MailFile[] {
   let total = 0;
+  const cids=new Set<string>();
   return (parsed.attachments || []).slice(0, MAX_ATTACHMENTS).map((file: any) => {
     const bytes = Buffer.isBuffer(file.content) ? file.content : Buffer.from(file.content || '');
     total += bytes.length;
+    const cid=String(file.contentId||file.cid||'').replace(/^<|>$/g,'');
+    const inline=String(parsed.html||'').includes('cid:'+cid)&&cidPattern.test(cid)&&!cids.has(cid)&&rasterType(bytes)===file.contentType;
+    if(inline)cids.add(cid);
     return { id: id(), filename: filename(String(file.filename || 'attachment')), content_type: String(file.contentType || 'application/octet-stream').slice(0, 100), size: Number(file.size || bytes.length),
-      ...(bytes.length && total <= MAX_ATTACHMENT_BYTES ? { encrypted_content: encryptSecret(bytes.toString('base64')) } : { unavailable: true }) };
+      ...(inline?{cid,disposition:'inline' as const}:{}),...(bytes.length && total <= MAX_ATTACHMENT_BYTES ? { encrypted_content: encryptSecret(bytes.toString('base64')) } : { unavailable: true }) };
   });
 }
 export const manualContentSchema = z.object({
-  body_text: z.string().trim().min(1).max(100000), body_html: z.string().max(200000).transform(value=>sanitizeEmail(value)).optional(),
+  body_text: z.string().min(1).max(100000).refine(value=>value.trim().length>0), body_html: z.string().max(200000).transform(value=>sanitizeFormattedEmail(value,'cid')).optional(),
   include_signature: z.boolean().optional(), signature: z.string().max(10000).optional(),
   open_tracking: z.boolean().optional(), attachments: z.array(attachmentSchema).max(MAX_ATTACHMENTS).optional(),
+  inline_images:z.array(inlineImageSchema).max(MAX_ATTACHMENTS).optional(),
   draft_id: z.string().uuid().optional(),
 });
 export function manualContent(body: z.infer<typeof manualContentSchema>, settings: any) {
   const signature = body.include_signature ? String(body.signature ?? settings.signature ?? '').trim() : '';
   const body_text = body.body_text + (signature ? '\n\n' + signature : '');
-  const html = body.body_html ? sanitizeEmail(body.body_html) : null;
-  return { body_text, body_html: html ? html + (signature ? '<p>' + escapeHtml(signature).replace(/\n/g, '<br>') + '</p>' : '') : null };
+  const html = body.body_html ? sanitizeFormattedEmail(body.body_html,'cid') : null;
+  const known=new Set((body.inline_images||[]).map(image=>image.cid));
+  if(html){const missing=[...html.matchAll(/src="cid:([^"]+)"/g)].some(match=>!known.has(match[1]));if(missing)throw new HttpError(400,'An inline image is missing. Reinsert it before sending.');}
+  return { body_text, body_html: html ? '<div style="font-family:Arial, sans-serif;font-size:15px;line-height:1.6">'+html+(signature?'<div style="margin-top:16px">'+escapeHtml(signature).replace(/\n/g,'<br>')+'</div>':'')+'</div>' : null };
+}
+export function previewMailHtml(html:string,messageId:string,files:MailFile[],allowRemote=false){
+  let hasRemote=false;
+  const body_html=sanitizeFormattedEmail(html,'stored',source=>{
+    if(source.startsWith('cid:')){const file=files.find(file=>file.cid===source.slice(4)&&file.disposition==='inline'&&!file.unavailable);return file?`/api/inbox/${messageId}/inline/${file.id}`:null;}
+    try{const url=new URL(source);if(/\/t\/open\//i.test(url.pathname))return null;if(url.protocol!=='https:'||url.username||url.password||!url.hostname.includes('.')||/^(?:\d+\.){3}\d+$/.test(url.hostname)||/(?:^|\.)(?:localhost|local|internal|test|invalid)$/.test(url.hostname))return null;hasRemote=true;return allowRemote?url.href:null;}catch{return null;}
+  });return {body_html,has_remote_images:hasRemote};
 }
 export async function saveMessageDetails(message: any, metadata: { from_name?: string; to_name?: string; attachments?: MailFile[] }, trx: Database = db) {
   await trx('message_details').insert({ message_id: message.id, from_name: String(metadata.from_name || '').replace(/[\x00-\x1f]/g, '').slice(0, 200), to_name: String(metadata.to_name || '').replace(/[\x00-\x1f]/g, '').slice(0, 200), attachments: JSON.stringify(metadata.attachments || []), attachment_manifest:JSON.stringify(safeFiles(metadata.attachments||[])), created_at: new Date() }).onConflict('message_id').ignore();
@@ -75,7 +108,8 @@ export async function enrichMail(messages: any[]) {
   const byOpen = new Map<string,any>(opens.map((item:any) => [item.message_id, item]));
   return messages.map(message => {
     const detail = byId.get(message.latest_message_id || message.id), engagement = byOpen.get(message.latest_message_id || message.id);
-    return { ...message, from_name: names.get(message.from_email) || detail?.from_name || '', to_name: names.get(message.to_email) || detail?.to_name || '', attachments: safeFiles(detail?.attachment_manifest),
+    const files=safeFiles(detail?.attachment_manifest);
+    return { ...message, from_name: names.get(message.from_email) || detail?.from_name || '', to_name: names.get(message.to_email) || detail?.to_name || '', attachments:files.filter(file=>file.disposition!=='inline'),inline_images:files.filter(file=>file.disposition==='inline'),
       open_count: Number(engagement?.open_count || 0), first_opened_at: engagement?.first_opened_at || null, last_opened_at: engagement?.last_opened_at || null };
   });
 }

@@ -9,7 +9,7 @@ import { contactEligibility, manualRecipientEligibility, stopContact } from './e
 import { prepareMarketing } from './tracking.js';
 import { runWorker } from './worker.js';
 import { groupConversations, conversationParticipant, type ThreadMessage } from './engine/threads.js';
-import { ensureMailFeatures, enrichMail, manualContentSchema, manualContent, encryptAttachments } from './engine/mail-features.js';
+import { ensureMailFeatures, enrichMail, manualContentSchema, manualContent, encryptMailFiles, previewMailHtml } from './engine/mail-features.js';
 import { ensureInboxReads, readMessageIds } from './engine/inbox-reads.js';
 import { ensureInboxFolders, spamMessageIds } from './engine/inbox-folders.js';
 
@@ -203,7 +203,7 @@ inboxRouter.get('/outbox',async(req,res)=>{
 });
 inboxRouter.post('/compose',permit('inbox:write'),async(req,res)=>{
   const body=manualContentSchema.extend({account_id:z.string().uuid(),to:z.string().trim().email().max(254).transform(normalizeEmail),subject:stepSchema.shape.subject.transform(s=>s.trim()).refine(s=>s.length>0,'Enter a subject')}).strict().parse(req.body),jobId=id();
-  const attachments=encryptAttachments(body.attachments);
+  const attachments=encryptMailFiles(body.attachments,body.inline_images);
   await db.transaction(async trx=>{
     await trx('business_settings').where({id:'agency'}).forUpdate().first();
     const account=await trx('email_accounts').where({id:body.account_id}).first();if(!account)throw new HttpError(400,'Mailbox not found.');
@@ -224,8 +224,10 @@ inboxRouter.get('/:id',async(req,res)=>{
   const spam=await spamMessageIds(thread.map(message=>message.id));
   const order=new Map(conversation.messages.map((item,index)=>[item.id,index]));thread.sort((a,b)=>order.get(a.id)!-order.get(b.id)!);
   const [delivery]=await withDeliveryStatus([message]);
+  const allowRemote=z.object({remote_images:z.enum(['true','false']).optional()}).parse(req.query).remote_images==='true';
+  const preview=(item:any)=>({...item,...(item.body_html?previewMailHtml(item.body_html,item.id,[...(item.attachments||[]),...(item.inline_images||[])],allowRemote):{body_html:null,has_remote_images:false})});
   res.json({...delivery,is_spam:spam.size>0,thread_id:conversation.root.id,conversation_subject:conversation.root.subject,message_count:thread.length,reply_message_id:conversation.latest.id,
-    body_html:message.body_html?sanitizeEmail(message.body_html):null,references_json:json(message.references_json,[]),thread:thread.map(m=>({...m,is_read:m.direction!=='inbound'||readIds.has(m.id),body_html:m.body_html?sanitizeEmail(m.body_html):null})),contact:await db('contacts').where({email:participant}).first()||null});
+    ...preview(thread.find(item=>item.id===message.id)||message),references_json:json(message.references_json,[]),thread:thread.map(m=>({...preview(m),is_read:m.direction!=='inbound'||readIds.has(m.id)})),contact:await db('contacts').where({email:participant}).first()||null});
 });
 inboxRouter.post('/:id/folder',permit('inbox:write'),async(req,res)=>{
   const body=z.object({folder:z.enum(['inbox','spam'])}).strict().parse(req.body);
@@ -273,7 +275,7 @@ inboxRouter.patch('/:id',permit('inbox:write'),async(req,res)=>{
 });
 inboxRouter.post('/:id/reply',permit('inbox:write'),async(req,res)=>{
   const body=manualContentSchema.strict().parse(req.body),jobId=id();
-  const attachments=encryptAttachments(body.attachments);
+  const attachments=encryptMailFiles(body.attachments,body.inline_images);
   await db.transaction(async trx=>{
     await trx('business_settings').where({id:'agency'}).forUpdate().first();
     const message=await trx('messages').where({id:req.params.id}).forUpdate().first();if(!message)throw new HttpError(404,'Message not found.');

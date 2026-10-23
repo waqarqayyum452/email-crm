@@ -1,4 +1,4 @@
-import sanitizeHtml from 'sanitize-html';
+import { sanitizeFormattedEmail } from '../lib/html.js';
 import { DateTime } from 'luxon';
 
 export const escapeHtml = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
@@ -21,12 +21,7 @@ export function safeDestination(value: string): string | null {
 }
 
 export function sanitizeEmail(html: string, allowImages = false, rewrite?: (url:string)=>string): string {
-  return sanitizeHtml(html, {
-    allowedTags: ['p','br','div','span','strong','b','em','i','u','ul','ol','li','blockquote','a','h1','h2','h3','table','thead','tbody','tr','td','th','hr', ...(allowImages ? ['img'] : [])],
-    allowedAttributes: { a: ['href','title'], ...(allowImages ? { img: ['src','alt','width','height'] } : {}) },
-    allowedSchemes: ['http','https','mailto'], allowProtocolRelative: false,
-    transformTags: { a: (_tag, attrs) => ({tagName:'a',attribs:{...attrs,...(attrs.href&&rewrite?{href:rewrite(attrs.href)}:{}),rel:'noopener noreferrer',target:'_blank'}}) },
-  });
+  return sanitizeFormattedEmail(html,allowImages?'stored':'none',undefined,rewrite);
 }
 
 export function renderStep(step: any, contact: any) {

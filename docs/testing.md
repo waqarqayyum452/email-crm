@@ -1,5 +1,15 @@
 # Testing and acceptance
 
+## Formatted mailbox flow (2026-10-24)
+
+Validation: 180 tests across 18 files and 24 production browser checks pass on isolated local MariaDB, with live sending disabled. TypeScript and production build pass; composer and incoming-message screenshots are reviewed.
+
+The local regression suite covers safe paragraph/text styles, Unicode and emoji, underlined links, strict inline raster validation, duplicate/missing CID rejection, combined file limits, draft persistence, encrypted image storage and session-protected image downloads. A real Nodemailer stream transport generates MIME in memory; mailparser parses it again before ingestion into the isolated CRM. Assertions verify text paragraphs, HTML spacing/formatting, CID image bytes and a separate document attachment. No SMTP server or real recipient is involved.
+
+Browser fixtures exercise plain-text clipboard newlines, automatic underlined URLs, image insertion at the cursor, draft reopening with embedded images, separate attachments, formatted incoming mail, authenticated image rendering, forwarding embedded images and external-image opt-in. Dashboard previews must never load their own open-tracking pixel. Synthetic addresses and images are used with live sending disabled.
+
+Gmail and Outlook are not directly verified by these local tests. For a future authorized client check, send the same formatted sample to controlled Gmail and Outlook accounts, compare paragraphs, bold/italic/underline, emoji, clickable links, embedded image positions and document downloads, then reply from both clients and inspect the received CRM thread. Record client/version differences; do not claim pixel-identical rendering. Previously stripped stored HTML/images require reimporting original MIME to recover missing content.
+
 Website branding (2026-10-23): the CRM reuses the agency website's SDWE wordmark, SVG favicon, Bagoss display fonts, royal-blue actions and sky-blue surfaces. Geist remains the reading/UI font. The isolated production browser walkthrough checks the real logo image, computed brand colors, phone-width login wrapping, desktop/sidebar branding, all dashboard routes, independent Inbox scrolling and mobile keyboard navigation with live sending disabled. Production build/typechecks pass; desktop and mobile screenshots are visually inspected.
 
 Website lead integration (2026-10-23): the complete isolated MariaDB suite passes 170 tests across 16 files with fake mail transports. New checks cover Bearer authentication, consent injection rejection, default Prospect ownership/stage, inquiry notes, concurrent delivery deduplication, repeat inquiries without resetting suppression/consent, persisted outage recovery, cursor replay, and rejection of untrusted recovery URLs. The website's six isolated tests verify server-only key matching, whitelisted inquiry exports, endpoint pinning, delivery failure handling and authenticated bounded recovery queries. Both projects pass TypeScript and production builds. No test submits real email.

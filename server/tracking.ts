@@ -1,3 +1,4 @@
+import { sanitizeFormattedEmail } from './lib/html.js';
 import { randomBytes } from 'node:crypto';
 import { Router, type Request } from './http.js';
 import { db, type Database } from './db.js';
@@ -16,7 +17,7 @@ export async function prepareManualTracking(message:any, enabled:boolean, trx:Da
   if(!enabled)return {body_html:message.body_html,open_tracking:false};
   const trackingToken=token();
   await trx('tracking_tokens').insert({id:trackingToken,message_id:message.id,campaign_id:message.campaign_id||null,contact_id:message.contact_id||null,kind:'tracking',created_at:new Date()});
-  const html=message.body_html?sanitizeEmail(message.body_html):'<div>'+escapeHtml(message.body_text).replace(/\n/g,'<br>')+'</div>';
+  const html=message.body_html?sanitizeFormattedEmail(message.body_html,'cid'):'<div>'+escapeHtml(message.body_text).replace(/\n/g,'<br>')+'</div>';
   return {body_html:html+`<img src="${trackingUrl('open',trackingToken)}" width="1" height="1" alt="">`,open_tracking:true};
 }
 

@@ -63,6 +63,7 @@ export class DomainRouter {
   get(path:string,...handlers:Handler[]){return this.add('GET',path,handlers);}
   post(path:string,...handlers:Handler[]){return this.add('POST',path,handlers);}
   patch(path:string,...handlers:Handler[]){return this.add('PATCH',path,handlers);}
+  delete(path:string,...handlers:Handler[]){return this.add('DELETE',path,handlers);}
   async dispatch(req:Request,res:HttpResponse,prefix=''):Promise<boolean>{
     if(prefix&&req.path!==prefix&&!req.path.startsWith(prefix+'/'))return false;
     const relative=req.path.slice(prefix.length)||'/';

@@ -3,7 +3,7 @@ import { config } from './config.js';
 import { isAllowedOrigin } from './lib/origins.js';
 import { HttpError } from './lib/util.js';
 
-const methods=['GET','HEAD','POST','PATCH','OPTIONS'];
+const methods=['GET','HEAD','POST','PATCH','DELETE','OPTIONS'];
 const headers=['content-type','x-csrf-token'];
 
 /** API-only CORS. Wildcards never share authenticated cookies across origins. */

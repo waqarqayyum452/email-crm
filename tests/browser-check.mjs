@@ -587,6 +587,29 @@ try {
     await dialog.getByRole('button', { name: 'Close dialog' }).click();
     await page.setViewportSize({ width: 1440, height: 1100 });
   });
+  await check('Mailbox deletion confirms, cancels safely and preserves past conversations', async () => {
+    const removalId = randomUUID();
+    const fixture = await db('email_accounts').where({id:mailboxId}).first();
+    await db('email_accounts').insert({...fixture,id:removalId,label:'Disposable connection',email:'remove-'+runId+'@example.test'});
+    await page.goto('http://127.0.0.1:3100/settings/accounts', {waitUntil:'networkidle'});
+    const card = page.locator('.mailbox-list article').filter({has:page.getByRole('heading',{name:'Disposable connection',exact:true})});
+    await expect(card.getByRole('button',{name:'Delete mailbox',exact:true})).toHaveCount(0);
+    await card.getByRole('button',{name:'Edit mailbox',exact:true}).click();
+    const editor=page.getByRole('dialog',{name:'Edit mailbox',exact:true});
+    await editor.getByLabel('Account label',{exact:true}).fill('Unsaved label');
+    await editor.getByRole('button',{name:'Delete mailbox',exact:true}).click();
+    let dialog = page.getByRole('dialog',{name:'Delete mailbox?',exact:true});
+    await expect(dialog.getByText(/does not delete your mailbox/)).toBeVisible();
+    await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+    await expect(editor).toBeVisible();
+    await expect(editor.getByLabel('Account label',{exact:true})).toHaveValue('Unsaved label');
+    await editor.getByRole('button',{name:'Delete mailbox',exact:true}).click();
+    dialog = page.getByRole('dialog',{name:'Delete mailbox?',exact:true});
+    await page.screenshot({path:path.join(artifacts,'crm-delete-mailbox.png'),fullPage:true});
+    await dialog.getByRole('button',{name:'Delete mailbox',exact:true}).click();
+    await expect(dialog).toBeHidden();await expect(card).toHaveCount(0);
+    const removed=await db('email_accounts').where({id:removalId}).first();expect(removed.deleted_at).toBeTruthy();expect(removed.smtp_secret).toBeNull();
+  });
   await check('Every dashboard page renders without runtime or API failures', async () => {
     for (const route of ['overview', 'prospects', 'campaigns', 'templates', 'inbox', 'pipeline', 'analytics', 'suppressions', 'settings/accounts', 'settings/sending', 'settings/tracking', 'settings/crm', 'settings/team', 'health']) {
       await page.goto(`http://127.0.0.1:3100/${route}`, { waitUntil: 'networkidle' });

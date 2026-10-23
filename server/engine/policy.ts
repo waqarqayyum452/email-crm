@@ -7,6 +7,7 @@ export const consumedStatuses = ['reserved','submitting','accepted','unknown'];
 // Operator-written one-to-one mail does not enroll or upgrade CRM contacts.
 // Address-level opt-outs still apply even when no contact is attached to a job.
 export async function manualRecipientEligibility(recipient:string,account:any,trx:Database=db):Promise<string|null> {
+  if(account?.deleted_at)return 'Mailbox has been deleted. Connect a mailbox before sending.';
   if(!z.string().email().max(254).safeParse(recipient).success)return 'Enter a valid recipient email address';
   const email=normalizeEmail(recipient);
   if(await trx('suppressions').where({email}).first())return 'Address is suppressed agency-wide';

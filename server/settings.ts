@@ -9,6 +9,7 @@ import { encryptSecret, decryptSecret } from './lib/crypto.js';
 import { validateMailTarget } from './lib/mail-target.js';
 import { id, audit, HttpError, normalizeEmail, safeError } from './lib/util.js';
 import { sanitizeEmail } from './lib/html.js';
+import { ensureMailboxRemoval } from './mailbox-removal.js';
 
 const safeUrl=z.string().max(2048).refine(v=>v===''||(/^https?:\/\//i.test(v)&&(()=>{try{return !new URL(v).username&&!new URL(v).password;}catch{return false;}})()),'Use a valid http(s) URL.');
 const customField=z.object({key:z.string().regex(/^[a-z][a-z0-9_]{0,49}$/),label:z.string().min(1).max(100),type:z.enum(['text','number','date']).default('text')});
@@ -33,9 +34,11 @@ settingsRouter.patch('/',permit('settings:write'),async(req,res)=>{
 export function safeAccount(account:any) {const {smtp_secret,imap_secret,...safe}=account;return {...safe,is_default:!!safe.is_default,has_smtp_secret:!!smtp_secret,has_imap_secret:!!imap_secret};}
 const accountSchema=z.object({label:z.string().min(1).max(150),email:z.string().email().max(254),sender_name:z.string().max(150).default(''),smtp_host:z.string().min(1).max(253),smtp_port:z.union([z.literal(465),z.literal(587)]),smtp_security:z.enum(['tls','starttls']),smtp_username:z.string().min(1).max(254),smtp_password:z.string().min(1).max(1024).optional(),imap_host:z.string().min(1).max(253),imap_port:z.literal(993),imap_security:z.literal('tls').default('tls'),imap_username:z.string().min(1).max(254),imap_password:z.string().min(1).max(1024).optional(),status:z.enum(['inactive','active','paused','error']).default('inactive'),provider_policy:z.literal('opt_in_only').default('opt_in_only')}).strict();
 export const accountRouter=Router();accountRouter.use(requireUser);
-accountRouter.get('/',async(_req,res)=>res.json({items:(await db('email_accounts').orderBy('created_at')).map(safeAccount)}));
+accountRouter.use(async(_req,_res,next)=>{await ensureMailboxRemoval();next();});
+accountRouter.get('/',async(_req,res)=>res.json({items:(await db('email_accounts').whereNull('deleted_at').orderBy('created_at')).map(safeAccount)}));
 async function saveAccount(body:any,userId:string,accountId?:string) {
-  const current=accountId?await db('email_accounts').where({id:accountId}).first():null;if(accountId&&!current)throw new HttpError(404,'Mailbox not found.');
+  let current=accountId?await db('email_accounts').where({id:accountId}).first():null;if(accountId&&(!current||current.deleted_at))throw new HttpError(404,'Mailbox not found.');
+  if(!accountId&&typeof body?.email==='string'){const removed=await db('email_accounts').where({email:normalizeEmail(body.email)}).whereNotNull('deleted_at').first();if(removed){if(!body.smtp_password||!body.imap_password)throw new HttpError(400,'Enter both mailbox passwords to reconnect this address.');current=removed;accountId=removed.id;}}
   const sanitized=current?safeAccount(current):{};const allowed=Object.keys(accountSchema.shape);const merged={...Object.fromEntries(Object.entries(sanitized).filter(([key])=>allowed.includes(key))),...body};const data=accountSchema.parse(merged);
   if((data.smtp_port===465)!==(data.smtp_security==='tls'))throw new HttpError(400,'Use implicit TLS on 465 or required STARTTLS on 587.');
   await Promise.all([validateMailTarget(data.smtp_host,data.smtp_port,'smtp'),validateMailTarget(data.imap_host,data.imap_port,'imap')]);
@@ -43,18 +46,42 @@ async function saveAccount(body:any,userId:string,accountId?:string) {
   if(current&&normalizeEmail(data.email)!==current.email)throw new HttpError(400,'Add a new mailbox to replace the sender. Existing sender identities are immutable.');
   const {smtp_password,imap_password,...columns}=data;
   const connectionChanged=!current||smtp_password||imap_password||['smtp_host','smtp_port','smtp_security','smtp_username','imap_host','imap_port','imap_username'].some(k=>(current as any)[k]!== (columns as any)[k]);
-  const row={...columns,email:normalizeEmail(columns.email),...(smtp_password?{smtp_secret:encryptSecret(smtp_password)}:{}),...(imap_password?{imap_secret:encryptSecret(imap_password)}:{}),...(connectionChanged?{verified_at:null,status:'inactive'}:{}),updated_at:new Date()};
+  const row={...columns,deleted_at:null,email:normalizeEmail(columns.email),...(smtp_password?{smtp_secret:encryptSecret(smtp_password)}:{}),...(imap_password?{imap_secret:encryptSecret(imap_password)}:{}),...(connectionChanged?{verified_at:null,status:'inactive'}:{}),updated_at:new Date()};
   if(!connectionChanged&&data.status==='active'&&!current?.verified_at)throw new HttpError(400,'Validate both SMTP and IMAP before activating this mailbox.');
-  const mailboxId=accountId||id();await db.transaction(async trx=>{await trx('business_settings').where({id:'agency'}).forUpdate().first();if(current){const latest=await trx('email_accounts').where({id:mailboxId}).forUpdate().first();if(!latest||new Date(latest.updated_at).getTime()!==new Date(current.updated_at).getTime())throw new HttpError(409,'Mailbox changed while saving. Refresh and try again.');await trx('email_accounts').where({id:mailboxId}).update(row);}else await trx('email_accounts').insert({id:mailboxId,...row,is_default:!(await trx('email_accounts').first()),created_at:new Date()});await audit(userId,current?'mailbox_updated':'mailbox_added','email_account',mailboxId,{label:data.label,email:data.email,connection_changed:!!connectionChanged},trx);});return safeAccount(await db('email_accounts').where({id:mailboxId}).first());
+  const mailboxId=accountId||id();await db.transaction(async trx=>{await trx('business_settings').where({id:'agency'}).forUpdate().first();if(current){const latest=await trx('email_accounts').where({id:mailboxId}).forUpdate().first();if(!latest||new Date(latest.updated_at).getTime()!==new Date(current.updated_at).getTime())throw new HttpError(409,'Mailbox changed while saving. Refresh and try again.');await trx('email_accounts').where({id:mailboxId}).update(row);}else await trx('email_accounts').insert({id:mailboxId,...row,is_default:!(await trx('email_accounts').whereNull('deleted_at').first()),created_at:new Date()});await audit(userId,current?'mailbox_updated':'mailbox_added','email_account',mailboxId,{label:data.label,email:data.email,connection_changed:!!connectionChanged},trx);});return safeAccount(await db('email_accounts').where({id:mailboxId}).first());
 }
 accountRouter.post('/',permit('settings:write'),async(req,res)=>res.status(201).json(await saveAccount(req.body,req.user!.id)));
 accountRouter.patch('/:id',permit('settings:write'),async(req,res)=>res.json(await saveAccount(req.body,req.user!.id,String(req.params.id))));
+accountRouter.delete('/:id',permit('settings:write'),async(req,res)=>{
+  await db.transaction(async trx=>{
+    await trx('business_settings').where({id:'agency'}).forUpdate().first();
+    const account=await trx('email_accounts').where({id:req.params.id}).forUpdate().first();
+    if(!account)throw new HttpError(404,'Mailbox not found.');
+    if(account.deleted_at)return;
+    // Lock the queue before clearing credentials. A claimed network operation must
+    // finish (or recover safely) before the operator can disconnect its account.
+    const jobs=await trx('jobs').where({account_id:account.id}).forUpdate();
+    if(jobs.some(job=>job.status==='leased')||await trx('send_attempts').where({account_id:account.id,status:'submitting'}).first())throw new HttpError(409,'This mailbox is processing mail. Wait a moment and try deleting it again.');
+    const now=new Date(),reason='Mailbox deleted from CRM';
+    // Unknown SMTP outcomes and their held jobs remain available for reconciliation.
+    const ambiguous=await trx('send_attempts').where({account_id:account.id,status:'unknown'}).select('job_id');
+    const unknownJobs=ambiguous.map(attempt=>attempt.job_id);
+    if(unknownJobs.length)await trx('jobs').whereIn('id',unknownJobs).update({status:'held',lease_owner:null,lease_until:null,updated_at:now});
+    await trx('jobs').where({account_id:account.id}).whereIn('status',['queued','failed','held']).whereNotIn('id',unknownJobs).update({status:'cancelled',last_error:reason,lease_owner:null,lease_until:null,updated_at:now});
+    await trx('send_attempts').where({account_id:account.id}).whereIn('status',['reserved','temporary','auth','limit']).update({status:'cancelled',retryable:false,error_message:reason});
+    await trx('enrollments').where({account_id:account.id}).whereIn('status',['active','paused']).update({status:'stopped',stop_reason:reason,updated_at:now});
+    await trx('campaigns').where({account_id:account.id}).whereIn('status',['active','scheduled']).update({status:'paused',updated_at:now});
+    await trx('email_accounts').where({id:account.id}).update({deleted_at:now,status:'inactive',is_default:false,smtp_secret:null,imap_secret:null,verified_at:null,last_sync_at:null,last_error:null,updated_at:now});
+    await audit(req.user!.id,'mailbox_deleted','email_account',account.id,{history_preserved:true},trx);
+  });
+  res.json({ok:true});
+});
 accountRouter.post('/:id/default',permit('settings:write'),async(req,res)=>{
-  await db.transaction(async trx=>{await trx('business_settings').where({id:'agency'}).forUpdate().first();const account=await trx('email_accounts').where({id:req.params.id}).first();if(!account)throw new HttpError(404,'Mailbox not found.');if(!account.verified_at||account.status!=='active')throw new HttpError(400,'Validate and activate the mailbox before making it the default.');await trx('email_accounts').update({is_default:false,updated_at:new Date()});await trx('email_accounts').where({id:account.id}).update({is_default:true});await audit(req.user!.id,'default_mailbox_changed','email_account',account.id,{},trx);});res.json({ok:true});
+  await db.transaction(async trx=>{await trx('business_settings').where({id:'agency'}).forUpdate().first();const account=await trx('email_accounts').where({id:req.params.id}).first();if(!account||account.deleted_at)throw new HttpError(404,'Mailbox not found.');if(!account.verified_at||account.status!=='active')throw new HttpError(400,'Validate and activate the mailbox before making it the default.');await trx('email_accounts').update({is_default:false,updated_at:new Date()});await trx('email_accounts').where({id:account.id}).update({is_default:true});await audit(req.user!.id,'default_mailbox_changed','email_account',account.id,{},trx);});res.json({ok:true});
 });
 accountRouter.post('/:id/test-connection',permit('settings:write'),async(req,res)=>{
   await consumeRateLimit('mail-test:'+req.user!.id,5,60000);
-  const account=await db('email_accounts').where({id:req.params.id}).first();if(!account)throw new HttpError(404,'Mailbox not found.');if(!account.smtp_secret||!account.imap_secret)throw new HttpError(400,'Save both mailbox passwords privately before validating.');
+  const account=await db('email_accounts').where({id:req.params.id}).whereNull('deleted_at').first();if(!account)throw new HttpError(404,'Mailbox not found.');if(!account.smtp_secret||!account.imap_secret)throw new HttpError(400,'Save both mailbox passwords privately before validating.');
   let transport:ReturnType<typeof nodemailer.createTransport>|undefined;let imap:ImapFlow|undefined;
   try {
     const [smtpTarget,imapTarget]=await Promise.all([validateMailTarget(account.smtp_host,account.smtp_port,'smtp'),validateMailTarget(account.imap_host,account.imap_port,'imap')]);

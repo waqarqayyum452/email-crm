@@ -152,7 +152,7 @@ describe('API CORS and authenticated writes', () => {
     const response = await request(app).options('/api/resource').set('Origin', 'https://frontend.example.test').set('Access-Control-Request-Method', 'POST').set('Access-Control-Request-Headers', 'content-type, x-csrf-token');
     expect(response.status).toBe(204); expect(response.text).toBe(''); expect(sessions).not.toHaveBeenCalled();
     expect(response.headers['access-control-allow-origin']).toBe('*'); expect(response.headers['access-control-allow-credentials']).toBeUndefined();
-    expect(response.headers['access-control-allow-methods'].split(/\s*,\s*/).sort()).toEqual(['GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST']);
+    expect(response.headers['access-control-allow-methods'].split(/\s*,\s*/).sort()).toEqual(['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST']);
     expect(response.headers['access-control-allow-headers'].toLowerCase().split(/\s*,\s*/).sort()).toEqual(['content-type', 'x-csrf-token']);
     expectOriginVary(response);
   });
@@ -162,7 +162,7 @@ describe('API CORS and authenticated writes', () => {
     const { app, sessions } = fixture();
     for (const headers of [
       { Origin: 'null', 'Access-Control-Request-Method': 'POST' },
-      { Origin: 'https://frontend.example.test', 'Access-Control-Request-Method': 'DELETE' },
+      { Origin: 'https://frontend.example.test', 'Access-Control-Request-Method': 'PUT' },
       { Origin: 'https://frontend.example.test' },
       { Origin: 'https://frontend.example.test', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'Authorization' },
       { Origin: 'https://frontend.example.test', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type, x-unapproved' },

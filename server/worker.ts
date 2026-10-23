@@ -66,7 +66,7 @@ export async function recoverExpiredLeases() {
 
 export async function requestSync(accountId:string) {
   return db.transaction(async trx=>{
-    const account=await trx('email_accounts').where({id:accountId}).forUpdate().first();if(!account)throw new HttpError(404,'Mailbox not found.');
+    const account=await trx('email_accounts').where({id:accountId}).forUpdate().first();if(!account||account.deleted_at)throw new HttpError(404,'Mailbox not found.');
     const existing=await trx('jobs').where({kind:'sync',account_id:accountId}).whereIn('status',['queued','leased']).first();if(existing)return existing.id;
     const jobId=id();await trx('jobs').insert({id:jobId,kind:'sync',account_id:accountId,payload:JSON.stringify({}),status:'queued',due_at:now(),attempts:0,created_at:now(),updated_at:now()});return jobId;
   });
@@ -228,8 +228,9 @@ async function sendJob(job:any,deadline:number) {
 
 export async function retryFailedJobs(actorId?:string) {
   return db.transaction(async trx=>{
+    await trx('business_settings').where({id:'agency'}).forUpdate().first();
     const jobs=await trx('jobs').where({status:'failed'}).forUpdate().skipLocked();let retried=0;
-    for(const job of jobs){const attempt=await trx('send_attempts').where({job_id:job.id}).first(),account=await trx('email_accounts').where({id:job.account_id}).first();if(job.kind==='sync'||(['temporary','auth','limit'].includes(attempt?.status)&&account?.status==='active'&&account?.verified_at)){
+    for(const job of jobs){const attempt=await trx('send_attempts').where({job_id:job.id}).first(),account=await trx('email_accounts').where({id:job.account_id}).first();if(!account||account.deleted_at)continue;if(job.kind==='sync'||(['temporary','auth','limit'].includes(attempt?.status)&&account?.status==='active'&&account?.verified_at)){
       await trx('jobs').where({id:job.id}).update({status:'queued',attempts:0,due_at:now(),lease_owner:null,lease_until:null,last_error:null,updated_at:now()});retried++;
     }}await audit(actorId,'queue.safe_retry','queue',null,{retried},trx);return {retried};
   });

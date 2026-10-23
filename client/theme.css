@@ -734,3 +734,12 @@ button.mail-open-status:hover { color: #244cbd; }
 
 .inbox-workspace .thread-controls { position: sticky; top: 0; z-index: 1; background: #fff; margin: 0 -14px; }
 @media (max-width: 600px) { .inbox-workspace .thread-controls { margin: 0 -10px; } }
+
+.inbox-folder-tabs { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 4px; padding: 7px 8px; }
+.inbox-folder-tabs > button { justify-content: center; gap: 3px; padding: 5px 2px; font-size: 12px; border-radius: 5px; cursor: pointer; }
+.inbox-folder-tabs > button.selected { background: #edf3ff; color: #315bba; }
+.inbox-folder-tabs > button > span { font-size: 10px; font-variant-numeric: tabular-nums; }
+.inbox-folder-tabs > button > svg { display: none; }
+
+.spam-view-note { margin: 0; padding: 7px 12px; font-size: 11px; line-height: 1.5; color: #617085; background: #fafbfe; border-bottom: 1px solid #e5edf2; }
+.conversation-options .spam-folder-action { margin-top: 8px; min-height: 30px; padding: 4px 8px; font-size: 12px; }

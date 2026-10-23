@@ -617,6 +617,31 @@ try {
     await db('messages').insert({...base,id:randomUUID(),message_id:'<reading-new-'+runId+'@example.test>',in_reply_to:'<reading-'+runId+'@example.test>',subject:'Re: '+subject,body_text:'A later incoming reply is unread again.',received_at:new Date(Date.now()+2000)});
     await page.goto('http://127.0.0.1:3100/inbox',{waitUntil:'networkidle'});await expect(row).toHaveClass(/is-unread/);
   });
+  await check('Inbox, Sent, Spam and Drafts filter correctly and CRM spam can be restored', async () => {
+    const sentId=randomUUID(),jobId=randomUUID(),attemptId=randomUUID(),incomingId=randomUUID(),now=new Date();
+    const original=await db('messages').where({id:inboundMessageId}).first();
+    await db('jobs').insert({id:jobId,kind:'send',account_id:composeMailboxId,payload:'{}',status:'completed',due_at:now,created_at:now,updated_at:now});
+    await db('send_attempts').insert({id:attemptId,job_id:jobId,account_id:composeMailboxId,message_id:'<sent-filter-'+runId+'@example.test>',recipient:'sent-folder@example.test',status:'accepted',reserved_at:now,accepted_at:now,created_at:now});
+    const sentSubject='Sent folder QA '+runId,incomingSubject='Spam folder QA '+runId;
+    await db('messages').insert([{id:sentId,account_id:composeMailboxId,attempt_id:attemptId,direction:'outbound',from_email:original.to_email,to_email:'sent-folder@example.test',message_id:'<sent-filter-'+runId+'@example.test>',references_json:'[]',subject:sentSubject,body_text:'Fake accepted delivery fixture only.',classification:'outbound',received_at:now,created_at:now},{id:incomingId,account_id:composeMailboxId,direction:'inbound',from_email:'unwanted@example.test',to_email:original.to_email,message_id:'<spam-filter-'+runId+'@example.test>',references_json:'[]',subject:incomingSubject,body_text:'An unwanted conversation for folder QA.',classification:'unmatched',received_at:now,created_at:now}]);
+    await page.goto('http://127.0.0.1:3100/inbox',{waitUntil:'networkidle'});
+    const folders=page.getByLabel('Mail folders',{exact:true});
+    for(const label of ['Inbox','Sent','Spam','Drafts'])await expect(folders.getByRole('button',{name:new RegExp('^'+label)})).toBeVisible();
+    await folders.getByRole('button',{name:/^Sent/}).click();await expect(page).toHaveURL(/folder=sent/);await expect(folders.getByRole('button',{name:/^Sent/})).toHaveAttribute('aria-pressed','true');
+    await expect(page.locator('.conversation-list .conversation-item').filter({hasText:sentSubject})).toHaveCount(1);await expect(page.locator('.conversation-list .conversation-item').filter({hasText:incomingSubject})).toHaveCount(0);
+    await page.screenshot({path:path.join(artifacts,'crm-inbox-sent-folder.png'),fullPage:true});
+    await folders.getByRole('button',{name:/^Inbox/}).click();
+    await page.locator('.conversation-list .conversation-item').filter({hasText:incomingSubject}).click();
+    await page.locator('.conversation-options > summary').click();await page.getByRole('button',{name:'Move to spam',exact:true}).click();
+    await expect(page).toHaveURL(/folder=spam/);const spamRow=page.locator('.conversation-list .conversation-item').filter({hasText:incomingSubject});await expect(spamRow).toHaveCount(1);
+    await expect(page.getByText('CRM spam only. Provider folders are unchanged.',{exact:true})).toBeVisible();
+    await page.reload({waitUntil:'networkidle'});await expect(folders.getByRole('button',{name:/^Spam/})).toHaveAttribute('aria-pressed','true');await expect(spamRow).toHaveCount(1);
+    await page.screenshot({path:path.join(artifacts,'crm-inbox-spam-folder.png'),fullPage:true});
+    await spamRow.click();await page.locator('.conversation-options > summary').click();await page.getByRole('button',{name:'Move to inbox',exact:true}).click();
+    await expect(page).toHaveURL(/folder=inbox/);await expect(page.locator('.conversation-list .conversation-item').filter({hasText:incomingSubject})).toHaveCount(1);
+    await folders.getByRole('button',{name:/^Spam/}).click();await expect(spamRow).toHaveCount(0);await expect(page.getByRole('heading',{name:'No spam conversations',exact:true})).toBeVisible();
+    await folders.getByRole('button',{name:/^Drafts/}).click();await expect(folders.getByRole('button',{name:/^Drafts/})).toHaveAttribute('aria-pressed','true');await expect(page.getByRole('heading',{name:'No saved drafts',exact:true})).toBeVisible();
+  });
   await check('Mailbox deletion confirms, cancels safely and preserves past conversations', async () => {
     const removalId = randomUUID();
     const fixture = await db('email_accounts').where({id:mailboxId}).first();

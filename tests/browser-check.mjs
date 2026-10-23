@@ -629,6 +629,8 @@ try {
     for(const label of ['Inbox','Sent','Spam','Drafts'])await expect(folders.getByRole('button',{name:new RegExp('^'+label)})).toBeVisible();
     await folders.getByRole('button',{name:/^Sent/}).click();await expect(page).toHaveURL(/folder=sent/);await expect(folders.getByRole('button',{name:/^Sent/})).toHaveAttribute('aria-pressed','true');
     await expect(page.locator('.conversation-list .conversation-item').filter({hasText:sentSubject})).toHaveCount(1);await expect(page.locator('.conversation-list .conversation-item').filter({hasText:incomingSubject})).toHaveCount(0);
+    await expect(folders.getByRole('button',{name:/^Sent/}).locator('span')).toHaveCount(0);
+    await expect(folders.getByRole('button',{name:/^Drafts/}).locator('span')).toHaveCount(0);
     await page.screenshot({path:path.join(artifacts,'crm-inbox-sent-folder.png'),fullPage:true});
     await folders.getByRole('button',{name:/^Inbox/}).click();
     await page.locator('.conversation-list .conversation-item').filter({hasText:incomingSubject}).click();
@@ -637,7 +639,11 @@ try {
     await expect(page.getByText('CRM spam only. Provider folders are unchanged.',{exact:true})).toBeVisible();
     await page.reload({waitUntil:'networkidle'});await expect(folders.getByRole('button',{name:/^Spam/})).toHaveAttribute('aria-pressed','true');await expect(spamRow).toHaveCount(1);
     await page.screenshot({path:path.join(artifacts,'crm-inbox-spam-folder.png'),fullPage:true});
-    await spamRow.click();await page.locator('.conversation-options > summary').click();await page.getByRole('button',{name:'Move to inbox',exact:true}).click();
+    await expect(folders.getByRole('button',{name:/^Spam/}).locator('span')).toHaveCount(0);
+    await db('messages').insert({id:randomUUID(),account_id:composeMailboxId,direction:'inbound',from_email:'unwanted@example.test',to_email:original.to_email,message_id:'<spam-unread-'+runId+'@example.test>',in_reply_to:'<spam-filter-'+runId+'@example.test>',references_json:'[]',subject:'Re: '+incomingSubject,body_text:'A newly received reply should restore the unread badge.',classification:'unmatched',received_at:new Date(Date.now()+1000),created_at:new Date()});
+    await page.reload({waitUntil:'networkidle'});await expect(folders.getByRole('button',{name:/^Spam/}).locator('span')).toHaveText('1');
+    await spamRow.click();await expect(folders.getByRole('button',{name:/^Spam/}).locator('span')).toHaveCount(0);
+    await page.locator('.conversation-options > summary').click();await page.getByRole('button',{name:'Move to inbox',exact:true}).click();
     await expect(page).toHaveURL(/folder=inbox/);await expect(page.locator('.conversation-list .conversation-item').filter({hasText:incomingSubject})).toHaveCount(1);
     await folders.getByRole('button',{name:/^Spam/}).click();await expect(spamRow).toHaveCount(0);await expect(page.getByRole('heading',{name:'No spam conversations',exact:true})).toBeVisible();
     await folders.getByRole('button',{name:/^Drafts/}).click();await expect(folders.getByRole('button',{name:/^Drafts/})).toHaveAttribute('aria-pressed','true');await expect(page.getByRole('heading',{name:'No saved drafts',exact:true})).toBeVisible();

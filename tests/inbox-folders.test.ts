@@ -32,6 +32,7 @@ describe.skipIf(!enabled)('CRM Inbox/Sent/Spam folders on isolated MariaDB, no s
   it('Sent requires SMTP acceptance and retains incoming replies in their conversation',async()=>{
     const sentView=await get('sent');expect(sentView.status,sentView.body.error).toBe(200);expect(sentView.body.items.map((item:any)=>item.id)).toEqual([root]);expect(sentView.body.items[0].message_count).toBe(2);
     expect(sentView.body.counts).toMatchObject({inbox:2,sent:1,spam:0});
+    expect(sentView.body.unread_counts).toEqual({inbox:2,sent:1,spam:0});
     expect((await get('inbox')).body.items.map((item:any)=>item.id).sort()).toEqual([root,incoming].sort());
     expect((await get('spam')).body.items).toHaveLength(0);expect((await get('all')).body.items).toHaveLength(4);
   });
@@ -51,5 +52,18 @@ describe.skipIf(!enabled)('CRM Inbox/Sent/Spam folders on isolated MariaDB, no s
     const anonymous=request.agent(app),pre=await anonymous.get('/api/auth/session');expect((await anonymous.post('/api/inbox/'+root+'/folder').set('x-csrf-token',pre.body.csrfToken).send({folder:'spam'})).status).toBe(401);
     expect((await move(root,'sent')).status).toBe(400);expect((await move(randomUUID(),'spam')).status).toBe(404);
     expect((await get('invalid')).status).toBe(400);
+  });
+  it('counts only personally unread conversations across folders, and new replies restore the badge',async()=>{
+    const detail=await request(app).get('/api/inbox/'+root).set('Cookie',owner.cookie);
+    expect((await request(app).post('/api/inbox/'+root+'/read').set('Cookie',owner.cookie).set('x-csrf-token',owner.csrf).send({message_ids:detail.body.thread.map((message:any)=>message.id)})).status).toBe(200);
+    expect((await get('inbox')).body.unread_counts).toEqual({inbox:1,sent:0,spam:0});
+    expect((await get('sent')).body.items).toHaveLength(1);
+    expect((await get('sent')).body.counts.sent).toBe(1);
+    const other=await request(app).get('/api/inbox').query({folder:'sent',account_id:accountId}).set('Cookie',reader.cookie);
+    expect(other.body.unread_counts).toEqual({inbox:2,sent:1,spam:0});
+    await move(root,'spam');expect((await get('spam')).body.unread_counts).toEqual({inbox:1,sent:0,spam:0});
+    const later=randomUUID();await db('messages').insert({...inbound(later),in_reply_to:'<'+sent+'@example.test>',created_at:new Date(now.getTime()+3000),received_at:new Date(now.getTime()+3000)});
+    expect((await get('inbox')).body.unread_counts).toEqual({inbox:1,sent:0,spam:1});
+    await move(root,'inbox');expect((await get('sent')).body.unread_counts).toEqual({inbox:2,sent:1,spam:0});
   });
 });

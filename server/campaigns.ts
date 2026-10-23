@@ -180,9 +180,11 @@ inboxRouter.get('/',async(req,res)=>{
   const isSpam=(group:typeof allGroups[number])=>group.messages.some(message=>spam.has(message.id));
   const inFolder=(group:typeof allGroups[number],folder:string)=>folder==='all'||(folder==='spam'?isSpam(group):!isSpam(group)&&group.messages.some(message=>folder==='sent'?message.direction==='outbound'&&message.smtp_status==='accepted':message.direction==='inbound'));
   const counts=Object.fromEntries(['inbox','sent','spam'].map(folder=>[folder,allGroups.filter(group=>inFolder(group,folder)).length]));
+  const readIds=await readMessageIds(req.user!.id,allGroups.flatMap(group=>group.messages.filter(message=>message.direction==='inbound').map(message=>message.id)));
+  const unreadCount=(group:typeof allGroups[number])=>group.messages.filter(message=>message.direction==='inbound'&&!readIds.has(message.id)).length;
+  const unread_counts=Object.fromEntries(['inbox','sent','spam'].map(folder=>[folder,allGroups.filter(group=>inFolder(group,folder)&&unreadCount(group)>0).length]));
   const groups=allGroups.filter(group=>inFolder(group,filters.folder)).slice(0,200);
   const latestIds=groups.map(group=>group.latest.id);
-  const readIds=await readMessageIds(req.user!.id,groups.flatMap(group=>group.messages.filter(message=>message.direction==='inbound').map(message=>message.id)));
   const previews=latestIds.length?await db('messages').whereIn('id',latestIds).select('id',db.raw('LEFT(body_text, 200) as preview')):[];
   const previewById=new Map(previews.map(message=>[message.id,message.preview]));
   const items=groups.map(({root,latest,messages})=>{
@@ -190,7 +192,7 @@ inboxRouter.get('/',async(req,res)=>{
     return {...summary,id:root.id,thread_id:root.id,subject:root.subject,latest_subject:latest.subject,
       latest_message_id:latest.id,message_ids:messages.map(message=>message.id),message_count:messages.length,is_spam:messages.some(message=>spam.has(message.id)),unread_count:messages.filter(message=>message.direction==='inbound'&&!readIds.has(message.id)).length,preview:previewById.get(latest.id)||''};
   });
-  res.json({items:await enrichMail(await withDeliveryStatus(items)),counts});
+  res.json({items:await enrichMail(await withDeliveryStatus(items)),counts,unread_counts});
 });
 inboxRouter.get('/outbox',async(req,res)=>{
   const filters=z.object({account_id:z.string().uuid().optional()}).parse(req.query);

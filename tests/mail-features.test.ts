@@ -17,6 +17,7 @@ import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
 import { encryptMailFiles, manualContent, previewMailHtml } from '../server/engine/mail-features.js';
 import { sanitizeFormattedEmail } from '../server/lib/html.js';
+import { ensureMailboxSignatures } from '../server/mailbox-signatures.js';
 const image={filename:'logo.png',content_type:'image/png' as const,cid:'logo@crm.inline',content_base64:'iVBORw0KGgoAAAANSUhEUgAAALQAAABACAIAAAA8rMpqAAAA20lEQVR4nO3csQ3CQBBFQZdFP7RNC9QAqQNegnTaszXSFPC1evEej+cHfjrGF7AtcZDEQRIHSRwkcZDEQRIHSRwkcZDEQRIHSRwkcZDEQRIH6Z84Xu9Vxs/BmThI4iCJgyQOkjhI145j3ZLbEAfiEIc4dlhyG+JAHOIQB5sQB0kcJHGQxEESB0kcJHGQxEG6dhzrlswaz0Ic+xrPQhz7Gs9CHPsaz+IOcbCUOEjiIImDJA6SFwwkcZDEQRIHSRwkcZDEQRIHSRwkcZDEQRIHSRwkcZDEQRIHSRykL6o+Pr1kGZ+CAAAAAElFTkSuQmCC'};
 
 const enabled=process.env.RUN_DB_TESTS==='true'&&Boolean(process.env.DB_NAME?.endsWith('_test'));
@@ -53,7 +54,7 @@ describe('mail attachments input',()=>{
 
 describe.skipIf(!enabled)('mail experience on isolated MariaDB with fake SMTP',()=>{
   const oldLive=config.liveSendEnabled;
-  beforeAll(async()=>{if(!await db.schema.hasTable('users'))await up(db);await ensureMailFeatures();config.encryptionKey=Buffer.alloc(32,4).toString('base64');config.schedulerSecret='isolated-mail-features-'+ 's'.repeat(40);config.liveSendEnabled=true;});
+  beforeAll(async()=>{if(!await db.schema.hasTable('users'))await up(db);await ensureMailFeatures();await ensureMailboxSignatures();config.encryptionKey=Buffer.alloc(32,4).toString('base64');config.schedulerSecret='isolated-mail-features-'+ 's'.repeat(40);config.liveSendEnabled=true;});
   afterAll(async()=>{config.liveSendEnabled=oldLive;await db.destroy();});
   beforeEach(async()=>{
     for(const table of tables)await db(table).delete();owner=await login();other=await login();
@@ -72,6 +73,16 @@ describe.skipIf(!enabled)('mail experience on isolated MariaDB with fake SMTP',(
     const detail=await get('/'+incoming.message.id);expect(detail.status).toBe(200);const mail=detail.body.thread[0];expect(mail.attachments).toHaveLength(1);expect(mail.inline_images).toHaveLength(1);expect(mail.has_remote_images).toBe(true);expect(mail.body_html).toContain('/inline/');expect(mail.body_html).not.toMatch(/\/t\/open\/|https:\/\/example.com\/photo/);expect(mail.body_html).toContain('First paragraph 😊');expect(JSON.stringify(detail.body)).not.toMatch(/encrypted_content|content_base64/);
     expect((await get('/'+incoming.message.id+'?remote_images=true')).body.thread[0].body_html).toContain('https://example.com/photo.png');
     const url='/api/inbox/'+incoming.message.id+'/inline/'+mail.inline_images[0].id;expect((await request(app).get(url)).status).toBe(401);const download=await request(app).get(url).set('Cookie',owner.cookie);expect(download.status).toBe(200);expect(download.headers['content-type']).toContain('image/png');expect(download.headers['cache-control']).toContain('no-store');expect(download.body.toString('base64')).toBe(image.content_base64);
+  });
+  it('snapshots the sending mailbox signature for compose and quick reply',async()=>{
+    await db('email_accounts').where({id:account.id}).update({signature:'Personal mailbox signature'});
+    const compose=await post('/compose',{account_id:account.id,to:'signature@example.test',subject:'Signature',body_text:'My message',include_signature:true});expect(compose.status).toBe(202);
+    const payload=json((await db('jobs').where({id:compose.body.job_id}).first()).payload,{});expect(payload.content.body_text).toBe('My message\n\nPersonal mailbox signature');
+    await db('email_accounts').where({id:account.id}).update({signature:'Changed later'});expect(payload.content.body_text).not.toContain('Changed later');
+    const incoming=await db.transaction(trx=>ingestIncoming(account,{messageId:'<'+uuid()+'@example.test>',from:{value:[{address:'signature@example.test'}]},text:'Hello',subject:'Signature reply',headers:new Map()},3,'1',trx));
+    const reply=await post('/'+incoming.message.id+'/reply',{body_text:'Reply message',include_signature:true});expect(reply.status).toBe(202);expect(json((await db('jobs').where({id:reply.body.job_id}).first()).payload,{}).content.body_text).toBe('Reply message\n\nChanged later');
+    await db('email_accounts').where({id:account.id}).update({signature:''});const blank=await post('/compose',{account_id:account.id,to:'signature@example.test',subject:'No signature',body_text:'My message',include_signature:true});expect(json((await db('jobs').where({id:blank.body.job_id}).first()).payload,{}).content.body_text).toBe('My message');
+    expect(manualContent({body_text:'Text',include_signature:true,signature:'One email override'},{signature:'Agency'},{signature:'Mailbox'}).body_text).toBe('Text\n\nOne email override');
   });
   it('sends sanitized formatted content, signature, immutable attachments and an opt-in tracking pixel',async()=>{
     const queued=await post('/compose',{account_id:account.id,to:'person@example.test',subject:'Proposal',body_text:'Hello person',body_html:'<p><strong>Hello</strong> person<script>bad()</script><img src="https://bad.test/pixel"></p>',attachments:[file],include_signature:true,open_tracking:true});expect(queued.status,queued.body.error).toBe(202);

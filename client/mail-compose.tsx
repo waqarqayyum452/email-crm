@@ -51,10 +51,10 @@ export function MailComposer({ initial = {}, onClose, onQueued }: { initial?: Ro
   const { accounts, settings, act, notify } = useWorkspace();
   const mailboxes = accounts.filter(account=>account.status==='active'&&account.verified_at);
   const preferred = mailboxes.find(account=>account.id===initial.account_id) || mailboxes.find(account=>account.is_default) || mailboxes[0];
-  const [data, setData] = useState<Row>({ to:'', subject:'', body_text:'', body_html:'', attachments:[], inline_images:[], include_signature:true, signature:settings.signature || '', open_tracking:true, ...initial, account_id: initial.reply_id ? initial.account_id || '' : preferred?.id || '' });
+  const [data, setData] = useState<Row>({ to:'', subject:'', body_text:'', body_html:'', attachments:[], inline_images:[], include_signature:true, signature:preferred?.signature ?? settings.signature ?? '', open_tracking:true, ...initial, account_id: initial.reply_id ? initial.account_id || '' : preferred?.id || '' });
   const fallbackMailboxId = preferred?.id || '';
   useEffect(() => {
-    if (!data.account_id && !data.reply_id && fallbackMailboxId) setData(current => current.account_id || current.reply_id ? current : {...current, account_id:fallbackMailboxId});
+    if (!data.account_id && !data.reply_id && fallbackMailboxId) setData(current => current.account_id || current.reply_id ? current : {...current, account_id:fallbackMailboxId, signature:initial.signature ?? preferred?.signature ?? settings.signature ?? ''});
   }, [data.account_id, data.reply_id, fallbackMailboxId]);
   const [draftId, setDraftId] = useState(initial.id || '');
   const [busy, setBusy] = useState(false), [readingFiles, setReadingFiles] = useState(false), [error, setError] = useState(''), [signatureOpen, setSignatureOpen] = useState(false), [draftSaved, setDraftSaved] = useState(false);
@@ -94,7 +94,7 @@ export function MailComposer({ initial = {}, onClose, onQueued }: { initial?: Ro
       notify('Email added to Outbox. Sending progress updates automatically.');onClose();onQueued();void api('/inbox/process',body({mode:'inbox'})).then(onQueued).catch(()=>notify('Email is kept in Outbox for automatic processing.'));
     }catch(error:any){setError(error.message);}finally{setBusy(false);}
   }}><fieldset disabled={busy||readingFiles}>
-    <div className="compose-envelope"><Field label="From mailbox"><select required disabled={Boolean(data.reply_id)} value={data.account_id} onChange={event=>field('account_id',event.target.value)}><option value="" disabled>Choose a validated mailbox</option>{mailboxes.map(account=><option key={account.id} value={account.id}>{account.sender_name || account.label} &lt;{account.email}&gt;</option>)}</select></Field>
+    <div className="compose-envelope"><Field label="From mailbox"><select required disabled={Boolean(data.reply_id)} value={data.account_id} onChange={event=>{const mailbox=mailboxes.find(account=>account.id===event.target.value);setData(current=>({...current,account_id:event.target.value,signature:mailbox?.signature ?? settings.signature ?? ''}));setDraftSaved(false);}}><option value="" disabled>Choose a validated mailbox</option>{mailboxes.map(account=><option key={account.id} value={account.id}>{account.sender_name || account.label} &lt;{account.email}&gt;</option>)}</select></Field>
     <Field label="To email"><input type="email" required maxLength={254} readOnly={Boolean(data.reply_id)} value={data.to} onChange={event=>field('to',event.target.value)} autoComplete="email"/></Field>
     <Field label="Subject"><input required maxLength={998} readOnly={Boolean(data.reply_id)} value={data.subject} onChange={event=>field('subject',event.target.value)}/></Field></div>
     <RichMessage text={data.body_text} html={data.body_html} inlineImages={data.inline_images} onImages={addInlineImages} onChange={(text,html)=>{setData(current=>({...current,body_text:text,body_html:html,inline_images:current.inline_images.filter((file:Row)=>html.includes('cid:'+file.cid))}));setDraftSaved(false);}}/>

@@ -72,8 +72,8 @@ export const manualContentSchema = z.object({
   inline_images:z.array(inlineImageSchema).max(MAX_ATTACHMENTS).optional(),
   draft_id: z.string().uuid().optional(),
 });
-export function manualContent(body: z.infer<typeof manualContentSchema>, settings: any) {
-  const signature = body.include_signature ? String(body.signature ?? settings.signature ?? '').trim() : '';
+export function manualContent(body: z.infer<typeof manualContentSchema>, settings: any, account?: any) {
+  const signature = body.include_signature ? String(body.signature ?? account?.signature ?? settings.signature ?? '').trim() : '';
   const body_text = body.body_text + (signature ? '\n\n' + signature : '');
   const html = body.body_html ? sanitizeFormattedEmail(body.body_html,'cid') : null;
   const known=new Set((body.inline_images||[]).map(image=>image.cid));

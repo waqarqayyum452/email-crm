@@ -753,3 +753,8 @@ button.mail-open-status:hover { color: #244cbd; }
 
 .remote-image-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 14px; font-size: 12px; background: #f5f8ff; color: #526176; flex-shrink: 0; }
 .remote-image-notice button { border: 0; background: none; color: #315bba; text-decoration: underline; font: inherit; cursor: pointer; }
+
+.inbox-mailbox-filter { display:flex; align-items:center; gap:8px; min-width:0; }
+.inbox-mailbox-filter > span { font-size:12px; font-weight:600; color:#526176; }
+.inbox-mailbox-filter select { max-width:320px; min-width:0; }
+@media(max-width:760px) { .inbox-mailbox-filter { width:100%; } .inbox-mailbox-filter select { flex:1; max-width:100%; } }

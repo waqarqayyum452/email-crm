@@ -1,3 +1,4 @@
+import { ensureMailboxSignatures } from './mailbox-signatures.js';
 import { Router } from './http.js';
 import { z } from 'zod';
 import { db, json, type Database } from './db.js';
@@ -152,7 +153,7 @@ templateRouter.post('/:id/duplicate',permit('campaigns:write'),async(req,res)=>{
 templateRouter.post('/:id/archive',permit('campaigns:write'),async(req,res)=>{if(!await db('templates').where({id:req.params.id}).first())throw new HttpError(404,'Template not found.');await db.transaction(async trx=>{await trx('templates').where({id:req.params.id}).update({archived:true,updated_at:new Date()});await audit(req.user!.id,'template.archived','template',String(req.params.id),{},trx);});res.json({ok:true});});
 templateRouter.post('/:id/preview',async(req,res)=>{const template=await db('templates').where({id:req.params.id}).first();if(!template)throw new HttpError(404,'Template not found.');const body=z.object({contact_id:z.string().uuid()}).parse(req.body);const contact=await db('contacts').where({id:body.contact_id}).first();if(!contact)throw new HttpError(404,'Contact not found.');try{res.json(renderStep(template,parseContact(contact)));}catch(error){throw new HttpError(400,(error as Error).message);}});
 
-export const inboxRouter=Router();inboxRouter.use(requireUser,async(_req,_res,next)=>{await ensureMailFeatures();await ensureInboxReads();await ensureInboxFolders();next();});
+export const inboxRouter=Router();inboxRouter.use(requireUser,async(_req,_res,next)=>{await ensureMailFeatures();await ensureMailboxSignatures();await ensureInboxReads();await ensureInboxFolders();next();});
 inboxRouter.post('/process',permit('inbox:write'),async(req,res)=>{
   const command=z.object({mode:z.enum(['sync','inbox']).default('inbox')}).strict().parse(req.body||{});
   await consumeRateLimit('inbox-process:'+req.user!.id,20,60000);
@@ -209,7 +210,7 @@ inboxRouter.post('/compose',permit('inbox:write'),async(req,res)=>{
     const account=await trx('email_accounts').where({id:body.account_id}).first();if(!account)throw new HttpError(400,'Mailbox not found.');
     const reason=await manualRecipientEligibility(body.to,account,trx);if(reason)throw new HttpError(400,reason);
     const contact=await trx('contacts').where({email:body.to}).first();
-    await trx('jobs').insert({id:jobId,kind:'send',account_id:account.id,payload:JSON.stringify({is_manual:true,manual_recipient:body.to,contact_id:contact?.id||null,attachments,open_tracking:body.open_tracking===true,content:{subject:body.subject,...manualContent(body,await getSettings(trx))}}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()});
+    await trx('jobs').insert({id:jobId,kind:'send',account_id:account.id,payload:JSON.stringify({is_manual:true,manual_recipient:body.to,contact_id:contact?.id||null,attachments,open_tracking:body.open_tracking===true,content:{subject:body.subject,...manualContent(body,await getSettings(trx),account)}}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()});
     if(body.draft_id)await trx('mail_drafts').where({id:body.draft_id,user_id:req.user!.id}).delete();
     await audit(req.user!.id,'inbox.compose_queued','email_account',account.id,{job_id:jobId},trx);
   });res.status(202).json({job_id:jobId});
@@ -283,7 +284,7 @@ inboxRouter.post('/:id/reply',permit('inbox:write'),async(req,res)=>{
     const recipient=normalizeEmail(message.direction==='inbound'?message.from_email:message.to_email);
     const reason=await manualRecipientEligibility(recipient,account,trx);if(reason)throw new HttpError(400,reason);
     const contact=await trx('contacts').where({email:recipient}).first();
-    await trx('jobs').insert({id:jobId,kind:'send',account_id:message.account_id,campaign_id:message.campaign_id,payload:JSON.stringify({is_manual:true,manual_recipient:recipient,is_reply:true,contact_id:contact?.id||null,reply_source_id:message.id,reply_recipient:recipient,in_reply_to:message.message_id,references:[...json<string[]>(message.references_json,[]),message.message_id].slice(-30),attachments,open_tracking:body.open_tracking===true,content:{subject:(/^re:/i.test(message.subject)?message.subject:'Re: '+message.subject).replace(/[\r\n]/g,' ').slice(0,998),...manualContent(body,await getSettings(trx))}}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()});
+    await trx('jobs').insert({id:jobId,kind:'send',account_id:message.account_id,campaign_id:message.campaign_id,payload:JSON.stringify({is_manual:true,manual_recipient:recipient,is_reply:true,contact_id:contact?.id||null,reply_source_id:message.id,reply_recipient:recipient,in_reply_to:message.message_id,references:[...json<string[]>(message.references_json,[]),message.message_id].slice(-30),attachments,open_tracking:body.open_tracking===true,content:{subject:(/^re:/i.test(message.subject)?message.subject:'Re: '+message.subject).replace(/[\r\n]/g,' ').slice(0,998),...manualContent(body,await getSettings(trx),account)}}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()});
     if(body.draft_id)await trx('mail_drafts').where({id:body.draft_id,user_id:req.user!.id}).delete();
     await audit(req.user!.id,'inbox.reply_queued','message',message.id,{job_id:jobId},trx);
   });res.status(202).json({job_id:jobId});

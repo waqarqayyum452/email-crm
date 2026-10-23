@@ -1,5 +1,9 @@
 # Testing and acceptance
 
+## Mailbox signatures and filtering (2026-10-24)
+
+The isolated suite passes 182 tests across 18 files. Signature checks cover persisted mailbox-specific text, blank signatures, 10000-character limits, CSRF, credential redaction, preserving existing validation, compose/quick-reply selection and immutable enqueue snapshots. The production browser walkthrough passes 25 checks, including editing a mailbox signature, switching From without losing the message, reopening a draft with its saved signature, expanded replies and mailbox filters retained through folder changes, reloads and conversation navigation. Desktop/mobile layouts and screenshots are reviewed. Production build/typechecks pass. All tests use isolated databases and fake mail transports; no live mail is submitted.
+
 ## Formatted mailbox flow (2026-10-24)
 
 Validation: 180 tests across 18 files and 24 production browser checks pass on isolated local MariaDB, with live sending disabled. TypeScript and production build pass; composer and incoming-message screenshots are reviewed.

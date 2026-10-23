@@ -47,13 +47,13 @@ function processInbox(mode: 'inbox' | 'sync', refresh: () => void, notify: (mess
 export function InboxPage({ messageId = '' }: { messageId?: string }) {
   const { revision, accounts, can, act, notify, refresh } = useWorkspace();
   const [classification, setClassification] = useState('');
-  const [account, setAccount] = useState('');
   const [search, setSearch] = useState('');
   const selected = messageId;
   const [busy, setBusy] = useState(false);
   const [composing, setComposing] = useState(false);
   const [draft, setDraft] = useState<Row>({});
   const router = useRouter(); const params = useSearchParams();
+  const account = params.get('account_id') || '';
   const folder = ['inbox','sent','spam','drafts'].includes(params.get('folder') || '') ? params.get('folder')! : 'inbox';
   const showDrafts = folder === 'drafts';
   const query = new URLSearchParams({ folder: showDrafts ? 'inbox' : folder, ...(classification ? { classification } : {}), ...(account ? { account_id: account } : {}) });
@@ -63,6 +63,8 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
   const mailboxResource = useResource('/accounts', revision, liveMailboxes);
   const currentAccounts = mailboxResource.data ? list(mailboxResource.data) : accounts;
   const rows = list(resource.data).filter(m => `${m.from_email} ${m.subject} ${m.latest_subject || ''} ${m.to_email}`.toLowerCase().includes(search.toLowerCase()));
+  const visibleDrafts = list(drafts.data).filter(draft=>!account||draft.account_id===account);
+  const mailboxQuery=account?'&account_id='+encodeURIComponent(account):'';
   const pending = list(outbox.data).filter(job => (!account || job.account_id === account) && `${job.recipient} ${job.subject}`.toLowerCase().includes(search.toLowerCase()));
 
   return <div className={`inbox-workspace ${selected ? 'has-conversation' : ''}`}>
@@ -84,23 +86,23 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
         <div className="search-field"><Search size={17} /><input aria-label="Search conversations" placeholder="Search conversations…" value={search} onChange={e => setSearch(e.target.value)} /></div>
         <div className="filters">
           <select aria-label="Conversation classification" value={classification} onChange={e => setClassification(e.target.value)}><option value="">All conversations</option><option value="outbound">Outgoing</option><option value="human_reply">Human replies</option><option value="automatic">Automatic replies</option><option value="delivery_failure">Delivery failures</option><option value="unmatched">New messages</option><option value="uncertain">Needs review</option></select>
-          <select aria-label="Inbox mailbox" value={account} onChange={e => setAccount(e.target.value)}><option value="">All mailboxes</option>{accounts.map(a => <option value={a.id} key={a.id}>{a.label} · {a.email}</option>)}</select>
+          <label className="inbox-mailbox-filter"><span>Mailbox</span><select aria-label="Inbox mailbox" value={account} onChange={e => router.push('/inbox?folder='+folder+(e.target.value?'&account_id='+encodeURIComponent(e.target.value):''),{scroll:false})}><option value="">All mailboxes</option>{currentAccounts.map(a => <option value={a.id} key={a.id}>{a.label} · {a.email}</option>)}</select></label>
         </div>
       </div>
       <div className="inbox-layout">
         <aside className="inbox-sidebar" aria-label="Mailbox conversations">
           <section aria-label="Outbox" className="inbox-sidebar-header"><details className="inbox-outbox"><summary><div><strong>Outbox</strong><p>Sending progress and messages needing attention</p></div><Badge>{pending.length}</Badge><ChevronDown size={17} /></summary><div className="outbox-items">{pending.length ? pending.map(job => <div className="conversation-item" key={job.id}><div className="conversation-top"><strong>{job.recipient}</strong><time>{date(job.updated_at || job.created_at, true)}</time></div><h3>{job.subject || '(No subject)'}</h3>{job.last_error && <p>{job.last_error}</p>}<SendStatus value={job.status} />{['held', 'failed'].includes(job.status) && can('system:write') && <p><Link href="/health">Review in System health</Link></p>}</div>) : <p className="panel-note">No queued messages.</p>}</div></details></section>
-          <div className="conversation-list-label inbox-folder-tabs" aria-label="Mail folders">{[{key:'inbox',label:'Inbox',icon:InboxIcon},{key:'sent',label:'Sent',icon:Send},{key:'spam',label:'Spam',icon:ShieldAlert},{key:'drafts',label:'Drafts',icon:FileText}].map(({key,label,icon:Icon})=><button type="button" key={key} className={folder===key?'selected':''} aria-pressed={folder===key} onClick={()=>router.push('/inbox?folder='+key,{scroll:false})}><Icon size={13}/>{label}{key !== 'drafts' && Number(resource.data?.unread_counts?.[key]) > 0 && <span aria-label={resource.data.unread_counts[key] + ' unread conversations'}>{resource.data.unread_counts[key]}</span>}</button>)}</div>
+          <div className="conversation-list-label inbox-folder-tabs" aria-label="Mail folders">{[{key:'inbox',label:'Inbox',icon:InboxIcon},{key:'sent',label:'Sent',icon:Send},{key:'spam',label:'Spam',icon:ShieldAlert},{key:'drafts',label:'Drafts',icon:FileText}].map(({key,label,icon:Icon})=><button type="button" key={key} className={folder===key?'selected':''} aria-pressed={folder===key} onClick={()=>router.push('/inbox?folder='+key+mailboxQuery,{scroll:false})}><Icon size={13}/>{label}{key !== 'drafts' && Number(resource.data?.unread_counts?.[key]) > 0 && <span aria-label={resource.data.unread_counts[key] + ' unread conversations'}>{resource.data.unread_counts[key]}</span>}</button>)}</div>
           {folder === 'spam' && <p className="spam-view-note">CRM spam only. Provider folders are unchanged.</p>}
-          <div className="conversation-list" role="region" aria-label="Conversation list" tabIndex={0}>{showDrafts?<Resource {...drafts} retry={drafts.reload}>{list(drafts.data).length?list(drafts.data).map(item=><button type="button" key={item.id} className="conversation-item mail-draft-item" onClick={async()=>{try{setDraft(await api<Row>(`/inbox/drafts/${item.id}`));setComposing(true);}catch(error:any){notify(error.message,true);}}}><strong>{item.to || 'No recipient'}</strong><h3>{item.subject}</h3><p>Draft · {date(item.updated_at,true)}</p></button>):<Empty title="No saved drafts" description="Save a draft from the email composer and return to it here."/>}</Resource>:<Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => {
+          <div className="conversation-list" role="region" aria-label="Conversation list" tabIndex={0}>{showDrafts?<Resource {...drafts} retry={drafts.reload}>{visibleDrafts.length?visibleDrafts.map(item=><button type="button" key={item.id} className="conversation-item mail-draft-item" onClick={async()=>{try{setDraft(await api<Row>(`/inbox/drafts/${item.id}`));setComposing(true);}catch(error:any){notify(error.message,true);}}}><strong>{item.to || 'No recipient'}</strong><h3>{item.subject}</h3><p>Draft · {date(item.updated_at,true)}</p></button>):<Empty title="No saved drafts" description="Save a draft from the email composer and return to it here."/>}</Resource>:<Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => {
             const active = selected === m.id || m.message_ids?.includes(selected);
-            return <Link className={`conversation-item ${active ? 'active' : ''} ${m.unread_count ? 'is-unread' : 'is-read'}`} key={m.thread_id || m.id} href={`/inbox/${m.id}?folder=${folder}`} scroll={false} aria-current={active ? 'page' : undefined}>
+            return <Link className={`conversation-item ${active ? 'active' : ''} ${m.unread_count ? 'is-unread' : 'is-read'}`} key={m.thread_id || m.id} href={`/inbox/${m.id}?folder=${folder}${mailboxQuery}`} scroll={false} aria-current={active ? 'page' : undefined}>
               <div className="conversation-top"><span className="avatar contact-avatar">{initials(personName(m) || 'Mail')}</span><strong title={participant(m)}>{personName(m) || 'Message'}</strong><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time></div>
               <div className="conversation-subject">{m.unread_count > 0 && <span className="unread-indicator" aria-label="Unread message" title="Unread" />}<h3>{m.subject || '(No subject)'}</h3>{m.message_count > 1 && <span className="conversation-count" aria-label={`${m.message_count} messages in conversation`}>{m.message_count}</span>}</div><div className="conversation-preview"><p>{m.preview || 'Open to read this conversation.'}</p>{(m.send_status || !['unmatched', 'outbound'].includes(m.classification)) && <MessageStatus message={m} interactive={false} />}</div>
             </Link>;
           }) : <Empty title={folder === 'sent' ? 'No sent emails yet' : folder === 'spam' ? 'No spam conversations' : 'A little quiet, for now.'} description={folder === 'sent' ? 'Emails accepted by the mail server appear here. Queued emails stay in Outbox.' : folder === 'spam' ? 'Move unwanted conversations to Spam from the conversation header. This view is managed inside the CRM.' : 'Synced incoming messages and their conversations will appear here.'} />}</Resource>}</div>
         </aside>
-        <section className="conversation-detail">{selected ? <Conversation key={selected} id={selected} accounts={currentAccounts} onRead={resource.reload} folder={folder} /> : <div className="inbox-welcome">
+        <section className="conversation-detail">{selected ? <Conversation key={selected} id={selected} accounts={currentAccounts} onRead={resource.reload} folder={folder} mailboxQuery={mailboxQuery} /> : <div className="inbox-welcome">
           <div className="inbox-welcome-art"><MessageCircle size={36} /><Mail size={23} /></div><h2>Good conversations live here.</h2><p>Select a message to read and reply, or choose New message to start a conversation.</p><div><ShieldCheck size={16} />Human replies stop automated follow-ups.</div>
         </div>}</section>
       </div>
@@ -109,7 +111,7 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
   </div>;
 }
 
-function Conversation({ id, accounts, onRead, folder }: { id: string; accounts: Row[]; onRead: () => void; folder: string }) {
+function Conversation({ id, accounts, onRead, folder, mailboxQuery }: { id: string; accounts: Row[]; onRead: () => void; folder: string; mailboxQuery: string }) {
   const { revision, users, settings, can, act, refresh, notify } = useWorkspace();
   const router = useRouter();
   const [moving, setMoving] = useState(false);
@@ -166,11 +168,11 @@ function Conversation({ id, accounts, onRead, folder }: { id: string; accounts: 
   return <Resource {...resource} retry={resource.reload}>
     {resource.refreshError && <p className="panel-note" role="status">This conversation could not refresh. Retrying automatically; your reply draft is kept.</p>}
     <div className="conversation-heading">
-      <Link href={'/inbox?folder=' + folder} className="text-link conversation-back"><ArrowLeft size={17} />All conversations</Link>
+      <Link href={'/inbox?folder=' + folder + mailboxQuery} className="text-link conversation-back"><ArrowLeft size={17} />All conversations</Link>
       <div className="conversation-title"><h2>{data.conversation_subject || message.subject || '(No subject)'}</h2><MessageStatus message={replySource} /></div>
       <p className="conversation-with">With <strong>{personName(replySource) || 'No reply address available'}</strong> {personName(replySource)!==replyRecipient&&<span>&lt;{replyRecipient}&gt;</span>}</p>
       <details className="conversation-options"><summary>Details <ChevronDown size={14} /></summary><p>Mailbox: {mailbox?.email || (message.direction === 'outbound' ? message.from_email : message.to_email)}</p>
-      {can('inbox:write') && <Button variant="ghost" className="spam-folder-action" busy={moving} title="Organize this conversation inside the CRM; provider folders are unchanged." onClick={async()=>{setMoving(true);try{const target=data.is_spam?'inbox':'spam';await act('/inbox/'+id+'/folder',body({folder:target}),target==='spam'?'Conversation moved to Spam in this CRM.':'Conversation removed from Spam.');const destination=target==='inbox'&&!thread.some((item:Row)=>item.direction==='inbound')?'sent':target;router.push('/inbox?folder='+destination,{scroll:false});}catch{}finally{setMoving(false);}}}>{data.is_spam?<InboxIcon size={14}/>:<ShieldAlert size={14}/>} {data.is_spam?'Move to inbox':'Move to spam'}</Button>}
+      {can('inbox:write') && <Button variant="ghost" className="spam-folder-action" busy={moving} title="Organize this conversation inside the CRM; provider folders are unchanged." onClick={async()=>{setMoving(true);try{const target=data.is_spam?'inbox':'spam';await act('/inbox/'+id+'/folder',body({folder:target}),target==='spam'?'Conversation moved to Spam in this CRM.':'Conversation removed from Spam.');const destination=target==='inbox'&&!thread.some((item:Row)=>item.direction==='inbound')?'sent':target;router.push('/inbox?folder='+destination+mailboxQuery,{scroll:false});}catch{}finally{setMoving(false);}}}>{data.is_spam?<InboxIcon size={14}/>:<ShieldAlert size={14}/>} {data.is_spam?'Move to inbox':'Move to spam'}</Button>}
       {can('inbox:write') && <div className="conversation-management"><Field label="Assigned teammate"><select value={message.assigned_to || ''} onChange={e => { act(`/inbox/${id}`, patch({ assigned_to: e.target.value || null }), 'Conversation assignment updated.').catch(() => {}); }}><option value="">Unassigned</option>{users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select></Field></div>}</details>
     </div>
     {!showRemoteImages && thread.some((item:Row)=>item.has_remote_images) && <div className="remote-image-notice"><span>External images are hidden. Loading them may notify the sender.</span><button type="button" onClick={()=>setShowRemoteImages(true)}>Show external images</button></div>}
@@ -197,7 +199,7 @@ function Conversation({ id, accounts, onRead, folder }: { id: string; accounts: 
       } catch (err: any) { setError(err.message); } finally { setBusy(false); }
     }}>
       <textarea ref={replyRef} aria-label="Reply message" rows={2} required maxLength={100000} disabled={busy || !validEmail(replyRecipient)} value={reply} onChange={e => setReply(e.target.value)} placeholder={`Reply to ${personName(replySource) || replyRecipient}…`} />
-      <div className="reply-footer"><button type="button" className="icon-button" aria-label="Expand reply with formatting and attachments" title="Formatting, attachments & signature" onClick={()=>setComposer({account_id:replySource.account_id,to:replyRecipient,subject:/^re:/i.test(replySource.subject)?replySource.subject:`Re: ${replySource.subject}`,reply_id:replySource.id,body_text:reply,signature:settings.signature||'',open_tracking:trackOpens})}><Paperclip size={16}/><Maximize2 size={13}/></button><button type="button" className={`icon-button ${trackOpens?'tracking-on':''}`} aria-label="Track opens for this reply" aria-pressed={trackOpens} title={trackOpens?'Open tracking on (estimated)':'Open tracking off'} onClick={()=>setTrackOpens(!trackOpens)}><Eye size={16}/></button><Button type="submit" busy={busy} disabled={!message.id || !validEmail(replyRecipient) || !reply.trim()}><Send size={15} />Send reply</Button></div>
+      <div className="reply-footer"><button type="button" className="icon-button" aria-label="Expand reply with formatting and attachments" title="Formatting, attachments & signature" onClick={()=>setComposer({account_id:replySource.account_id,to:replyRecipient,subject:/^re:/i.test(replySource.subject)?replySource.subject:`Re: ${replySource.subject}`,reply_id:replySource.id,body_text:reply,open_tracking:trackOpens})}><Paperclip size={16}/><Maximize2 size={13}/></button><button type="button" className={`icon-button ${trackOpens?'tracking-on':''}`} aria-label="Track opens for this reply" aria-pressed={trackOpens} title={trackOpens?'Open tracking on (estimated)':'Open tracking off'} onClick={()=>setTrackOpens(!trackOpens)}><Eye size={16}/></button><Button type="submit" busy={busy} disabled={!message.id || !validEmail(replyRecipient) || !reply.trim()}><Send size={15} />Send reply</Button></div>
       {!validEmail(replyRecipient) && <FormError error="This message has no valid reply address. Use New message to write to an email address." />}
       {queued && <div className="inbox-queue-confirmation" role="status"><CheckCircle2 size={16} /><span>{queued}</span></div>}
       <FormError error={error} />

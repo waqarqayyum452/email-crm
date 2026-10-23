@@ -10,6 +10,7 @@ import { validateMailTarget } from './lib/mail-target.js';
 import { id, audit, HttpError, normalizeEmail, safeError } from './lib/util.js';
 import { sanitizeEmail } from './lib/html.js';
 import { ensureMailboxRemoval } from './mailbox-removal.js';
+import { ensureMailboxSignatures } from './mailbox-signatures.js';
 
 const safeUrl=z.string().max(2048).refine(v=>v===''||(/^https?:\/\//i.test(v)&&(()=>{try{return !new URL(v).username&&!new URL(v).password;}catch{return false;}})()),'Use a valid http(s) URL.');
 const customField=z.object({key:z.string().regex(/^[a-z][a-z0-9_]{0,49}$/),label:z.string().min(1).max(100),type:z.enum(['text','number','date']).default('text')});
@@ -32,9 +33,9 @@ settingsRouter.patch('/',permit('settings:write'),async(req,res)=>{
 });
 
 export function safeAccount(account:any) {const {smtp_secret,imap_secret,...safe}=account;return {...safe,is_default:!!safe.is_default,has_smtp_secret:!!smtp_secret,has_imap_secret:!!imap_secret};}
-const accountSchema=z.object({label:z.string().min(1).max(150),email:z.string().email().max(254),sender_name:z.string().max(150).default(''),smtp_host:z.string().min(1).max(253),smtp_port:z.union([z.literal(465),z.literal(587)]),smtp_security:z.enum(['tls','starttls']),smtp_username:z.string().min(1).max(254),smtp_password:z.string().min(1).max(1024).optional(),imap_host:z.string().min(1).max(253),imap_port:z.literal(993),imap_security:z.literal('tls').default('tls'),imap_username:z.string().min(1).max(254),imap_password:z.string().min(1).max(1024).optional(),status:z.enum(['inactive','active','paused','error']).default('inactive'),provider_policy:z.literal('opt_in_only').default('opt_in_only')}).strict();
+const accountSchema=z.object({signature:z.string().max(10000).nullable().default(null),label:z.string().min(1).max(150),email:z.string().email().max(254),sender_name:z.string().max(150).default(''),smtp_host:z.string().min(1).max(253),smtp_port:z.union([z.literal(465),z.literal(587)]),smtp_security:z.enum(['tls','starttls']),smtp_username:z.string().min(1).max(254),smtp_password:z.string().min(1).max(1024).optional(),imap_host:z.string().min(1).max(253),imap_port:z.literal(993),imap_security:z.literal('tls').default('tls'),imap_username:z.string().min(1).max(254),imap_password:z.string().min(1).max(1024).optional(),status:z.enum(['inactive','active','paused','error']).default('inactive'),provider_policy:z.literal('opt_in_only').default('opt_in_only')}).strict();
 export const accountRouter=Router();accountRouter.use(requireUser);
-accountRouter.use(async(_req,_res,next)=>{await ensureMailboxRemoval();next();});
+accountRouter.use(async(_req,_res,next)=>{await ensureMailboxRemoval();await ensureMailboxSignatures();next();});
 accountRouter.get('/',async(_req,res)=>res.json({items:(await db('email_accounts').whereNull('deleted_at').orderBy('created_at')).map(safeAccount)}));
 async function saveAccount(body:any,userId:string,accountId?:string) {
   let current=accountId?await db('email_accounts').where({id:accountId}).first():null;if(accountId&&(!current||current.deleted_at))throw new HttpError(404,'Mailbox not found.');

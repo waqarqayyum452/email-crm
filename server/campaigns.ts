@@ -10,6 +10,7 @@ import { prepareMarketing } from './tracking.js';
 import { runWorker } from './worker.js';
 import { groupConversations, conversationParticipant, type ThreadMessage } from './engine/threads.js';
 import { ensureMailFeatures, enrichMail, manualContentSchema, manualContent, encryptAttachments } from './engine/mail-features.js';
+import { ensureInboxReads, readMessageIds } from './engine/inbox-reads.js';
 
 const stepSchema = z.object({subject:z.string().min(1).max(998).refine(s=>!/[\r\n]/.test(s),'Subject must be one line'),body_text:z.string().min(1).max(100000),body_html:z.string().max(200000).nullable().optional(),delay_days:z.number().int().min(0).max(365).default(0)});
 const draftSchema = z.object({name:z.string().trim().min(1).max(200),account_id:z.string().uuid(),steps:z.array(stepSchema).min(1).max(10),contact_ids:z.array(z.string().uuid()).max(10000).default([]),open_tracking:z.boolean().default(false),click_tracking:z.boolean().default(false),scheduled_at:z.string().datetime({offset:true}).nullable().optional()});
@@ -150,7 +151,7 @@ templateRouter.post('/:id/duplicate',permit('campaigns:write'),async(req,res)=>{
 templateRouter.post('/:id/archive',permit('campaigns:write'),async(req,res)=>{if(!await db('templates').where({id:req.params.id}).first())throw new HttpError(404,'Template not found.');await db.transaction(async trx=>{await trx('templates').where({id:req.params.id}).update({archived:true,updated_at:new Date()});await audit(req.user!.id,'template.archived','template',String(req.params.id),{},trx);});res.json({ok:true});});
 templateRouter.post('/:id/preview',async(req,res)=>{const template=await db('templates').where({id:req.params.id}).first();if(!template)throw new HttpError(404,'Template not found.');const body=z.object({contact_id:z.string().uuid()}).parse(req.body);const contact=await db('contacts').where({id:body.contact_id}).first();if(!contact)throw new HttpError(404,'Contact not found.');try{res.json(renderStep(template,parseContact(contact)));}catch(error){throw new HttpError(400,(error as Error).message);}});
 
-export const inboxRouter=Router();inboxRouter.use(requireUser,async(_req,_res,next)=>{await ensureMailFeatures();next();});
+export const inboxRouter=Router();inboxRouter.use(requireUser,async(_req,_res,next)=>{await ensureMailFeatures();await ensureInboxReads();next();});
 inboxRouter.post('/process',permit('inbox:write'),async(req,res)=>{
   const command=z.object({mode:z.enum(['sync','inbox']).default('inbox')}).strict().parse(req.body||{});
   await consumeRateLimit('inbox-process:'+req.user!.id,20,60000);
@@ -175,12 +176,13 @@ inboxRouter.get('/',async(req,res)=>{
   const groups=groupConversations(await query.select(threadColumns) as ThreadMessage[])
     .filter(group=>!filters.classification||group.messages.some(message=>message.classification===filters.classification)).slice(0,200);
   const latestIds=groups.map(group=>group.latest.id);
+  const readIds=await readMessageIds(req.user!.id,groups.flatMap(group=>group.messages.filter(message=>message.direction==='inbound').map(message=>message.id)));
   const previews=latestIds.length?await db('messages').whereIn('id',latestIds).select('id',db.raw('LEFT(body_text, 200) as preview')):[];
   const previewById=new Map(previews.map(message=>[message.id,message.preview]));
   const items=groups.map(({root,latest,messages})=>{
     const {references_json,in_reply_to,message_id,...summary}=latest;
     return {...summary,id:root.id,thread_id:root.id,subject:root.subject,latest_subject:latest.subject,
-      latest_message_id:latest.id,message_ids:messages.map(message=>message.id),message_count:messages.length,preview:previewById.get(latest.id)||''};
+      latest_message_id:latest.id,message_ids:messages.map(message=>message.id),message_count:messages.length,unread_count:messages.filter(message=>message.direction==='inbound'&&!readIds.has(message.id)).length,preview:previewById.get(latest.id)||''};
   });
   res.json({items:await enrichMail(await withDeliveryStatus(items))});
 });
@@ -210,10 +212,23 @@ inboxRouter.get('/:id',async(req,res)=>{
   const headers=await db('messages').where({account_id:message.account_id}).select(threadColumns);
   const conversation=groupConversations(headers as ThreadMessage[]).find(group=>group.messages.some(item=>item.id===message.id))!;
   const thread=await enrichMail(await withDeliveryStatus(await db('messages').whereIn('id',conversation.messages.map(item=>item.id))));
+  const readIds=await readMessageIds(req.user!.id,thread.map(message=>message.id));
   const order=new Map(conversation.messages.map((item,index)=>[item.id,index]));thread.sort((a,b)=>order.get(a.id)!-order.get(b.id)!);
   const [delivery]=await withDeliveryStatus([message]);
   res.json({...delivery,thread_id:conversation.root.id,conversation_subject:conversation.root.subject,message_count:thread.length,reply_message_id:conversation.latest.id,
-    body_html:message.body_html?sanitizeEmail(message.body_html):null,references_json:json(message.references_json,[]),thread:thread.map(m=>({...m,body_html:m.body_html?sanitizeEmail(m.body_html):null})),contact:await db('contacts').where({email:participant}).first()||null});
+    body_html:message.body_html?sanitizeEmail(message.body_html):null,references_json:json(message.references_json,[]),thread:thread.map(m=>({...m,is_read:m.direction!=='inbound'||readIds.has(m.id),body_html:m.body_html?sanitizeEmail(m.body_html):null})),contact:await db('contacts').where({email:participant}).first()||null});
+});
+inboxRouter.post('/:id/read',async(req,res)=>{
+  const body=z.object({message_ids:z.array(z.string().uuid()).min(1).max(1000)}).strict().parse(req.body);
+  const message=await db('messages').where({id:req.params.id}).first();if(!message)throw new HttpError(404,'Message not found.');
+  const headers=await db('messages').where({account_id:message.account_id}).select(threadColumns);
+  const conversation=groupConversations(headers as ThreadMessage[]).find(group=>group.messages.some(item=>item.id===message.id))!;
+  const allowed=new Set(conversation.messages.map(item=>item.id));
+  if(body.message_ids.some(messageId=>!allowed.has(messageId)))throw new HttpError(400,'Read receipts must belong to this conversation.');
+  // Acknowledge only the displayed snapshot; a later arriving reply stays unread.
+  const requested=new Set(body.message_ids),ids=conversation.messages.filter(item=>item.direction==='inbound'&&requested.has(item.id)).map(item=>item.id);
+  if(ids.length)await db('inbox_reads').insert(ids.map(messageId=>({user_id:req.user!.id,message_id:messageId,read_at:new Date()}))).onConflict(['user_id','message_id']).ignore();
+  res.json({read_ids:ids});
 });
 inboxRouter.patch('/:id',permit('inbox:write'),async(req,res)=>{
   const body=z.object({contact_id:z.string().uuid().nullable().optional(),assigned_to:z.string().uuid().nullable().optional()}).parse(req.body);

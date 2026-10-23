@@ -54,4 +54,23 @@ export function Timeline({ items }: { items: Row[] }) {
   return items.length ? <div className="timeline">{items.map((item, i) => <div className="timeline-item" key={item.id || i}><span className="timeline-dot" /><div><strong>{String(item.description || item.action || item.type || item.subject || 'Activity').replace(/[._]/g, ' ')}</strong>{(item.email || item.detail || item.entity_type) && <p>{String(item.email || item.detail || item.entity_type).replace(/_/g, ' ')}</p>}<small>{date(item.created_at || item.at, true)}</small></div></div>)}</div> : <Empty title="A fresh start" description="New messages and contact updates will appear in your activity timeline." />;
 }
 export function LinkArrow({ href, children }: { href: string; children: ReactNode }) { return <Link className="text-link" href={href}>{children}<ChevronRight size={15} /></Link>; }
-export function HtmlPreview({ html, text }: { html?: string; text?: string }) { return html ? <iframe className="email-preview" title="Email preview" sandbox="" referrerPolicy="no-referrer" srcDoc={`<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:;"><style>body{font:14px/1.65 system-ui;color:#293544;padding:20px;overflow-wrap:anywhere}a{color:#366b73}</style>${html}`} /> : <div className="plain-preview">{text || 'No message content.'}</div>; }
+export function HtmlPreview({ html, text, fullHeight = false }: { html?: string; text?: string; fullHeight?: boolean }) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  const cleanup = useRef<() => void>(() => {});
+  useEffect(() => () => cleanup.current(), []);
+  const fitContent = () => {
+    cleanup.current();
+    if (!fullHeight || !frame.current?.contentDocument?.body) return;
+    const node = frame.current, document = node.contentDocument!, body = document.body;
+    // Only same-origin measurement is enabled. Scripts, forms, navigation and
+    // remote resources remain blocked by the sandbox and the preview CSP.
+    const measure = () => {
+      const height = Math.ceil(Math.max(body.scrollHeight, body.getBoundingClientRect().height) + 24);
+      if (node.style.height !== height + 'px') node.style.height = height + 'px';
+    };
+    const observer = new ResizeObserver(measure); observer.observe(body);
+    measure();
+    cleanup.current = () => observer.disconnect();
+  };
+  return html ? <iframe ref={frame} className={`email-preview ${fullHeight ? 'email-preview-full' : ''}`} title="Email preview" sandbox={fullHeight ? 'allow-same-origin' : ''} referrerPolicy="no-referrer" onLoad={fitContent} srcDoc={`<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:;"><style>html{overflow-wrap:anywhere}body{font:14px/1.65 system-ui;color:#293544;padding:${fullHeight ? '4px 0 12px' : '20px'};overflow-wrap:anywhere}img,table{max-width:100%}a{color:#366b73}</style>${html}`} /> : <div className="plain-preview">{text || 'No message content.'}</div>;
+}

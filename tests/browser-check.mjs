@@ -587,6 +587,36 @@ try {
     await dialog.getByRole('button', { name: 'Close dialog' }).click();
     await page.setViewportSize({ width: 1440, height: 1100 });
   });
+  await check('Inbox read highlights persist, full HTML expands, messages collapse and open activity is accurate', async () => {
+    const messageId=randomUUID(),sentId=randomUUID(),subject='Inbox reading QA '+runId,now=new Date();
+    const original=await db('messages').where({id:inboundMessageId}).first();
+    const base={account_id:composeMailboxId,from_email:inboxSender,to_email:original.to_email,direction:'inbound',classification:'unmatched',references_json:'[]',received_at:now,created_at:now};
+    await db('messages').insert({...base,id:messageId,message_id:'<reading-'+runId+'@example.test>',subject,body_text:'Long readable email',body_html:'<h2>Full email content</h2>'+Array.from({length:70},(_,i)=>'<p>Full email paragraph '+i+' with readable content.</p>').join('')+'<script>parent.emailScriptExecuted=true</script><img src="https://blocked.example.test/pixel">'});
+    await db('messages').insert({...base,id:sentId,direction:'outbound',classification:'outbound',from_email:original.to_email,to_email:inboxSender,message_id:'<reading-sent-'+runId+'@example.test>',in_reply_to:'<reading-'+runId+'@example.test>',references_json:JSON.stringify(['<reading-'+runId+'@example.test>']),subject:'Re: '+subject,body_text:'Tracked reply fixture, never sent',open_tracking:true,received_at:new Date(Date.now()+1000)});
+    const firstOpen=new Date(Date.now()-3600000),lastOpen=new Date(Date.now()-2000);
+    await db('tracking_events').insert([{id:randomUUID(),message_id:sentId,kind:'open',bot:false,created_at:firstOpen},{id:randomUUID(),message_id:sentId,kind:'open',bot:false,created_at:lastOpen},{id:randomUUID(),message_id:sentId,kind:'open',bot:true,created_at:now}]);
+    await page.goto('http://127.0.0.1:3100/inbox',{waitUntil:'networkidle'});
+    const row=page.locator('.conversation-list .conversation-item').filter({hasText:subject});
+    await expect(row).toHaveClass(/is-unread/);await expect(row.getByLabel('Unread message')).toBeVisible();
+    await row.click();
+    await expect(row).toHaveClass(/is-read/);await page.reload({waitUntil:'networkidle'});await expect(row).toHaveClass(/is-read/);
+    const frame=page.locator('.thread-messages iframe.email-preview-full');await expect(frame).toHaveCount(1);
+    await expect.poll(()=>frame.evaluate(node=>node.getBoundingClientRect().height)).toBeGreaterThan(2000);
+    const dimensions=await frame.evaluate(node=>({height:node.clientHeight,scroll:node.contentDocument.documentElement.scrollHeight,sandbox:node.getAttribute('sandbox'),source:node.srcdoc}));
+    expect(dimensions.scroll-dimensions.height).toBeLessThanOrEqual(2);expect(dimensions.sandbox).not.toContain('allow-scripts');expect(dimensions.source).not.toContain('emailScriptExecuted');expect(dimensions.source).not.toContain('blocked.example.test');expect(await page.evaluate(()=>window.emailScriptExecuted)).toBeUndefined();
+    const draft=page.getByRole('textbox',{name:'Reply message',exact:true});await draft.fill('Keep my reply while collapsing messages.');
+    await page.getByRole('button',{name:'Collapse older messages',exact:true}).click();await expect(frame).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'Expand message',exact:true})).toHaveCount(1);
+    await page.getByRole('button',{name:'Expand all',exact:true}).click();await expect(frame).toHaveCount(1);await expect(draft).toHaveValue('Keep my reply while collapsing messages.');
+    await page.getByRole('button',{name:'Open recorded',exact:true}).first().click();
+    const dialog=page.getByRole('dialog',{name:'Email open activity',exact:true});await expect(dialog.locator('dd').nth(0)).toHaveText('2');
+    await expect(dialog.locator('dd').nth(1)).not.toHaveText('Not recorded');await expect(dialog.locator('dd').nth(2)).not.toHaveText('Not recorded');await expect(dialog.locator('dd').nth(3)).toHaveText('Unavailable');
+    await page.screenshot({path:path.join(artifacts,'crm-inbox-open-activity.png'),fullPage:true});await dialog.getByRole('button',{name:'Close',exact:true}).click();
+    await page.getByRole('button',{name:'Collapse older messages',exact:true}).click();await page.screenshot({path:path.join(artifacts,'crm-inbox-collapsed-messages.png'),fullPage:true});
+    await page.goto('http://127.0.0.1:3100/overview',{waitUntil:'networkidle'});
+    await db('messages').insert({...base,id:randomUUID(),message_id:'<reading-new-'+runId+'@example.test>',in_reply_to:'<reading-'+runId+'@example.test>',subject:'Re: '+subject,body_text:'A later incoming reply is unread again.',received_at:new Date(Date.now()+2000)});
+    await page.goto('http://127.0.0.1:3100/inbox',{waitUntil:'networkidle'});await expect(row).toHaveClass(/is-unread/);
+  });
   await check('Mailbox deletion confirms, cancels safely and preserves past conversations', async () => {
     const removalId = randomUUID();
     const fixture = await db('email_accounts').where({id:mailboxId}).first();

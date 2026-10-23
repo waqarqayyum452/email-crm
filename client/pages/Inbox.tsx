@@ -25,8 +25,12 @@ function SendStatus({ value }: { value: string }) {
   const state = sendingStates[value];
   return state ? <Badge tone={state.tone}>{state.label}</Badge> : <Status value={value} />;
 }
-function MessageStatus({ message }: { message: Row }) {
-  return <span className="mail-status-group">{message.direction === 'outbound' && message.send_status ? <SendStatus value={message.send_status} /> : <Status value={messageStatus(message)} />}{message.direction === 'outbound' && Boolean(message.open_tracking) && <span className={`mail-open-status ${message.open_count ? 'recorded' : ''}`} title={`Image loads are estimates, not proof of reading.${message.first_opened_at?' First recorded: '+date(message.first_opened_at,true):''}`}><Eye size={13}/>{message.open_count ? 'Open recorded' : 'No open recorded'}</span>}</span>;
+function MessageStatus({ message, interactive = true }: { message: Row; interactive?: boolean }) {
+  const [showOpens, setShowOpens] = useState(false);
+  const tracked = message.direction === 'outbound' && Boolean(message.open_tracking);
+  const label = message.open_count ? 'Open recorded' : 'No open recorded';
+  const recordedTime = (value: string) => value ? new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' }) : 'Not recorded';
+  return <><span className="mail-status-group">{message.direction === 'outbound' && message.send_status ? <SendStatus value={message.send_status} /> : <Status value={messageStatus(message)} />}{tracked && (interactive ? <button type="button" className={`mail-open-status ${message.open_count ? 'recorded' : ''}`} onClick={() => setShowOpens(true)} aria-haspopup="dialog"><Eye size={13}/>{label}</button> : <span className={`mail-open-status ${message.open_count ? 'recorded' : ''}`}><Eye size={13}/>{label}</span>)}</span>{showOpens && <Modal title="Email open activity" onClose={() => setShowOpens(false)}><div className="open-tracking-summary"><p className="panel-note">To {message.to_name || message.to_email}</p><dl><div><dt>Recorded opens</dt><dd>{Number(message.open_count || 0)}</dd></div><div><dt>First recorded open</dt><dd>{recordedTime(message.first_opened_at)}</dd></div><div><dt>Last recorded open</dt><dd>{recordedTime(message.last_opened_at)}</dd></div><div><dt>Time spent reading</dt><dd>Unavailable</dd></div></dl><p className="panel-note">These are tracking-image loads, not confirmed reads. Image blocking, privacy proxies and automated scanners can hide or add opens. Email tracking cannot reliably measure reading duration.</p></div><div className="form-footer"><Button variant="secondary" onClick={() => setShowOpens(false)}>Close</Button></div></Modal>}</>;
 }
 function SenderIdentity({ name, email }: { name: string; email: string }) {
   return <details className="mail-person"><summary><span className="avatar avatar-small">{initials(name || email)}</span><span><strong>{name || email}</strong><small>{name ? email : 'Sender details'}</small></span><ChevronDown size={12}/></summary><div className="mail-person-card"><strong>{name || email}</strong><span>{email}</span></div></details>;
@@ -85,13 +89,13 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
           <div className="conversation-list-label"><button type="button" className={!showDrafts?'selected':''} onClick={()=>setShowDrafts(false)}>Inbox <span>{rows.length}</span></button><button type="button" className={showDrafts?'selected':''} onClick={()=>setShowDrafts(true)}><FileText size={13}/>Drafts <span>{list(drafts.data).length}</span></button></div>
           <div className="conversation-list" role="region" aria-label="Conversation list" tabIndex={0}>{showDrafts?<Resource {...drafts} retry={drafts.reload}>{list(drafts.data).length?list(drafts.data).map(item=><button type="button" key={item.id} className="conversation-item mail-draft-item" onClick={async()=>{try{setDraft(await api<Row>(`/inbox/drafts/${item.id}`));setComposing(true);}catch(error:any){notify(error.message,true);}}}><strong>{item.to || 'No recipient'}</strong><h3>{item.subject}</h3><p>Draft · {date(item.updated_at,true)}</p></button>):<Empty title="No saved drafts" description="Save a draft from the email composer and return to it here."/>}</Resource>:<Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => {
             const active = selected === m.id || m.message_ids?.includes(selected);
-            return <Link className={`conversation-item ${active ? 'active' : ''}`} key={m.thread_id || m.id} href={`/inbox/${m.id}`} scroll={false} aria-current={active ? 'page' : undefined}>
+            return <Link className={`conversation-item ${active ? 'active' : ''} ${m.unread_count ? 'is-unread' : 'is-read'}`} key={m.thread_id || m.id} href={`/inbox/${m.id}`} scroll={false} aria-current={active ? 'page' : undefined}>
               <div className="conversation-top"><span className="avatar contact-avatar">{initials(personName(m) || 'Mail')}</span><strong title={participant(m)}>{personName(m) || 'Message'}</strong><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time></div>
-              <div className="conversation-subject"><h3>{m.subject || '(No subject)'}</h3>{m.message_count > 1 && <span className="conversation-count" aria-label={`${m.message_count} messages in conversation`}>{m.message_count}</span>}</div><div className="conversation-preview"><p>{m.preview || 'Open to read this conversation.'}</p>{(m.send_status || !['unmatched', 'outbound'].includes(m.classification)) && <MessageStatus message={m} />}</div>
+              <div className="conversation-subject">{m.unread_count > 0 && <span className="unread-indicator" aria-label="Unread message" title="Unread" />}<h3>{m.subject || '(No subject)'}</h3>{m.message_count > 1 && <span className="conversation-count" aria-label={`${m.message_count} messages in conversation`}>{m.message_count}</span>}</div><div className="conversation-preview"><p>{m.preview || 'Open to read this conversation.'}</p>{(m.send_status || !['unmatched', 'outbound'].includes(m.classification)) && <MessageStatus message={m} interactive={false} />}</div>
             </Link>;
           }) : <Empty title="A little quiet, for now." description="Synced messages and your conversations will appear here." />}</Resource>}</div>
         </aside>
-        <section className="conversation-detail">{selected ? <Conversation key={selected} id={selected} accounts={currentAccounts} /> : <div className="inbox-welcome">
+        <section className="conversation-detail">{selected ? <Conversation key={selected} id={selected} accounts={currentAccounts} onRead={resource.reload} /> : <div className="inbox-welcome">
           <div className="inbox-welcome-art"><MessageCircle size={36} /><Mail size={23} /></div><h2>Good conversations live here.</h2><p>Select a message to read and reply, or choose New message to start a conversation.</p><div><ShieldCheck size={16} />Human replies stop automated follow-ups.</div>
         </div>}</section>
       </div>
@@ -100,7 +104,7 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
   </div>;
 }
 
-function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
+function Conversation({ id, accounts, onRead }: { id: string; accounts: Row[]; onRead: () => void }) {
   const { revision, users, settings, can, act, refresh, notify } = useWorkspace();
   const resource = useResource(`/inbox/${id}`, revision, liveInbox);
   const data = resource.data || {};
@@ -118,6 +122,20 @@ function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
   const followLatest = useRef(true);
   const previousLast = useRef('');
   const [newMessages, setNewMessages] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const acknowledged = useRef(new Set<string>());
+  const markingRead = useRef(false);
+  useEffect(() => {
+    if (!resource.data || document.hidden || markingRead.current) return;
+    const ids = (resource.data.thread || []).filter((item: Row) => item.direction === 'inbound' && !item.is_read && !acknowledged.current.has(item.id)).map((item: Row) => item.id).slice(0, 1000);
+    if (!ids.length) return;
+    markingRead.current = true;
+    void api<Row>('/inbox/' + id + '/read', body({ message_ids: ids })).then(result => {
+      for (const messageId of result.read_ids) acknowledged.current.add(messageId);
+      onRead();
+    }).catch(() => { /* A future refresh retries; failed writes never clear the highlight. */ }).finally(() => { markingRead.current = false; });
+  }, [resource.data, id, onRead]);
+  const toggleMessage = (messageId: string) => { followLatest.current = false; setCollapsed(previous => { const next = new Set(previous); if (next.has(messageId)) next.delete(messageId); else next.add(messageId); return next; }); };
   const lastId = thread.at(-1)?.id || '';
   const scrollToLatest = () => { const node = scrollRef.current; if (node) node.scrollTop = node.scrollHeight; followLatest.current = true; setNewMessages(false); };
   useEffect(() => {
@@ -130,8 +148,9 @@ function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
     if (!node) return;
     const observer = new ResizeObserver(() => { if (followLatest.current) node.scrollTop = node.scrollHeight; });
     observer.observe(node);
+    for (const article of node.querySelectorAll('.thread-message')) observer.observe(article);
     return () => observer.disconnect();
-  }, [Boolean(resource.data)]);
+  }, [Boolean(resource.data), lastId]);
   const replySource = thread.find((item: Row) => item.id === (replyTo || data.reply_message_id)) || thread.at(-1) || message;
   const replyRecipient = participant(replySource);
   const mailbox = accounts.find(a => a.id === message.account_id);
@@ -145,12 +164,14 @@ function Conversation({ id, accounts }: { id: string; accounts: Row[] }) {
       <details className="conversation-options"><summary>Details <ChevronDown size={14} /></summary><p>Mailbox: {mailbox?.email || (message.direction === 'outbound' ? message.from_email : message.to_email)}</p>
       {can('inbox:write') && <div className="conversation-management"><Field label="Assigned teammate"><select value={message.assigned_to || ''} onChange={e => { act(`/inbox/${id}`, patch({ assigned_to: e.target.value || null }), 'Conversation assignment updated.').catch(() => {}); }}><option value="">Unassigned</option>{users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select></Field></div>}</details>
     </div>
-    <div className="thread-messages" ref={scrollRef} role="region" aria-label="Conversation messages" tabIndex={0} onScroll={() => { const node = scrollRef.current; if (node) { followLatest.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80; if (followLatest.current) setNewMessages(false); } }}>{thread.map((m: Row, i: number) => <article className={`thread-message ${m.direction === 'outbound' ? 'outbound' : ''}`} key={m.id || i}>
-      <div className="thread-message-heading"><SenderIdentity name={m.from_name||''} email={m.from_email||''}/><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time>{can('inbox:write')&&<><button type="button" className="icon-button" aria-label={`Reply to ${m.from_name||m.from_email}`} title="Reply" onClick={()=>{setReplyTo(m.id);replyRef.current?.focus();}}><Reply size={16}/></button><button type="button" className="icon-button" aria-label={`Forward ${m.subject}`} title="Forward" onClick={async()=>{try{const attachments=await Promise.all((m.attachments||[]).filter((file:Row)=>!file.unavailable).map(async(file:Row)=>{const response=await fetch(`/api/inbox/${m.id}/attachments/${file.id}`,{credentials:'same-origin'});if(!response.ok)throw new Error('An attachment could not be included.');const blob=await response.blob();const content_base64=await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(blob);});return {filename:file.filename,content_type:file.content_type,content_base64};}));setComposer({forward:true,account_id:m.account_id,to:'',subject:/^fwd:/i.test(m.subject)?m.subject:`Fwd: ${m.subject}`,body_text:`\n\n---------- Forwarded message ----------\nFrom: ${m.from_name||m.from_email} <${m.from_email}>\nDate: ${date(m.received_at,true)}\nSubject: ${m.subject}\nTo: ${m.to_email}\n\n${m.body_text}`,attachments});}catch(error:any){notify(error.message,true);}}}><Forward size={16}/></button></>}</div>
+    <div className="thread-messages" ref={scrollRef} role="region" aria-label="Conversation messages" tabIndex={0} onScroll={() => { const node = scrollRef.current; if (node) { followLatest.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80; if (followLatest.current) setNewMessages(false); } }}>{thread.length > 1 && <div className="thread-controls"><span>{thread.length} messages</span><button type="button" onClick={() => { followLatest.current = false; setCollapsed(new Set(thread.slice(0, -1).map((item: Row) => item.id))); }}>Collapse older messages</button><button type="button" onClick={() => { followLatest.current = false; setCollapsed(new Set()); }}>Expand all</button></div>}{thread.map((m: Row, i: number) => <article className={`thread-message ${m.direction === 'outbound' ? 'outbound' : ''} ${collapsed.has(m.id) ? 'is-collapsed' : ''}`} key={m.id || i}>
+      <div className="thread-message-heading"><button type="button" className="icon-button message-collapse" aria-label={collapsed.has(m.id) ? 'Expand message' : 'Collapse message'} aria-expanded={!collapsed.has(m.id)} aria-controls={'message-body-' + m.id} onClick={() => toggleMessage(m.id)}><ChevronDown size={16}/></button><SenderIdentity name={m.from_name||''} email={m.from_email||''}/><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time>{can('inbox:write')&&<><button type="button" className="icon-button" aria-label={`Reply to ${m.from_name||m.from_email}`} title="Reply" onClick={()=>{setReplyTo(m.id);replyRef.current?.focus();}}><Reply size={16}/></button><button type="button" className="icon-button" aria-label={`Forward ${m.subject}`} title="Forward" onClick={async()=>{try{const attachments=await Promise.all((m.attachments||[]).filter((file:Row)=>!file.unavailable).map(async(file:Row)=>{const response=await fetch(`/api/inbox/${m.id}/attachments/${file.id}`,{credentials:'same-origin'});if(!response.ok)throw new Error('An attachment could not be included.');const blob=await response.blob();const content_base64=await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(blob);});return {filename:file.filename,content_type:file.content_type,content_base64};}));setComposer({forward:true,account_id:m.account_id,to:'',subject:/^fwd:/i.test(m.subject)?m.subject:`Fwd: ${m.subject}`,body_text:`\n\n---------- Forwarded message ----------\nFrom: ${m.from_name||m.from_email} <${m.from_email}>\nDate: ${date(m.received_at,true)}\nSubject: ${m.subject}\nTo: ${m.to_email}\n\n${m.body_text}`,attachments});}catch(error:any){notify(error.message,true);}}}><Forward size={16}/></button></>}</div>
+      {collapsed.has(m.id) ? <button type="button" className="collapsed-message-preview" onClick={() => toggleMessage(m.id)}>{m.body_text || 'Expand to read this email'}</button> : <div id={'message-body-' + m.id}>
       <div className="message-delivery-line"><span>To {m.to_name||m.to_email}</span>{m.direction==='outbound'&&<MessageStatus message={m}/>}</div>
       {m.campaign_id && data.contact && m.contact_id === data.contact.id && String(data.contact.email || '').trim().toLowerCase() === participant(m) && <ReviewReply message={m} />}
-      <HtmlPreview html={m.body_html || m.html} text={m.body_text || m.text} />
+      <HtmlPreview html={m.body_html || m.html} text={m.body_text || m.text} fullHeight />
       {m.attachments?.length>0&&<div className="message-attachments">{m.attachments.map((file:Row)=>file.unavailable?<span key={file.id}><Paperclip size={14}/>{file.filename} · Open in webmail</span>:<a key={file.id} href={`/api/inbox/${m.id}/attachments/${file.id}`} download><Paperclip size={14}/><strong>{file.filename}</strong><small>{fileSize(file.size)}</small></a>)}</div>}
+    </div>}
     </article>)}</div>
     {newMessages && <button className="new-messages-button" onClick={scrollToLatest}><ArrowDown size={15} />New messages: jump to latest</button>}
     {can('inbox:write') && <form className="reply-composer" aria-label={`Reply to ${replyRecipient}`} onSubmit={async e => {

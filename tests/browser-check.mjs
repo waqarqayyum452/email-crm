@@ -181,6 +181,15 @@ try {
     expect(await db('send_attempts')).toHaveLength(0);
   });
   await check('Owner signs in with session and CSRF', async () => {
+    const logo=page.locator('.login-brand .brand-wordmark');
+    await expect(logo).toHaveAttribute('src','/sdwe-wordmark.webp');
+    expect(await logo.evaluate(node=>node.complete&&node.naturalWidth>0)).toBe(true);
+    expect(await page.locator('.login-story').evaluate(node=>getComputedStyle(node).backgroundColor)).toBe('rgb(206, 235, 255)');
+    expect(await page.locator('.login-form button[type=submit]').evaluate(node=>getComputedStyle(node).backgroundColor)).toBe('rgb(56, 99, 255)');
+    await page.setViewportSize({width:390,height:844});
+    await noPageOverflow(page,'Branded mobile login');
+    await page.screenshot({path:path.join(artifacts,'crm-brand-login-mobile.png'),fullPage:true});
+    await page.setViewportSize({width:1440,height:1100});
     await page.evaluate(() => document.fonts.ready);
     await page.screenshot({ path: path.join(artifacts, 'crm-login-modern.png'), fullPage: true });
     await page.getByLabel('Email address', { exact: true }).fill(ownerEmail);
@@ -190,6 +199,8 @@ try {
     expect(sessionCookie, 'Production login creates a session cookie').toBeTruthy();
     expect(sessionCookie.secure).toBe(true); expect(sessionCookie.httpOnly).toBe(true); expect(sessionCookie.sameSite).toBe('Strict');
     await expect(page.getByRole('heading', { name: 'Good to see you, Browser.' })).toBeVisible();
+    await expect(page.locator('.sidebar .brand-wordmark')).toBeVisible();
+    expect(await page.locator('.sidebar').evaluate(node=>getComputedStyle(node).backgroundColor)).toBe('rgb(222, 240, 253)');
     await expect(page.getByText('Automation paused', { exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Outreach performance', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Sending capacity', exact: true })).toBeVisible();

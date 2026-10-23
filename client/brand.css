@@ -1,0 +1,95 @@
+/* SDWE website identity: shared wordmark, Bagoss headings, royal blue and sky. */
+:root {
+  --brand: #3863ff;
+  --brand-hover: #2352ff;
+  --brand-sky: #ceebff;
+  --brand-navy: #000c36;
+  --teal: var(--brand);
+  --dark: var(--brand-navy);
+  --ink: #101828;
+  --text-secondary: #44516a;
+  --muted: #63718a;
+  --canvas: #f3f8ff;
+  --border: #dce5f1;
+}
+h1, h2, h3, h4 { font-family: var(--font-brand-display), var(--font-sans); font-weight: 600; }
+.page-header h1, .login-form h2, .login-copy h1 { letter-spacing: -.025em; font-weight: 600; }
+::selection { color: #fff; background: var(--brand); }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline-color: #3863ff; }
+input:focus, select:focus, textarea:focus { border-color: #3863ff; box-shadow: 0 0 0 3px #3863ff15; }
+.button.primary { background: var(--brand); box-shadow: 0 2px 4px #3863ff18; }
+.button.primary:hover:not(:disabled) { background: var(--brand-hover); box-shadow: 0 4px 14px #3863ff25; }
+.login-form form > .button.primary { background: var(--brand); }
+.login-form form > .button.primary:hover:not(:disabled) { background: var(--brand-hover); }
+.button.secondary:hover:not(:disabled), .button.ghost:hover:not(:disabled), .icon-button:hover { background: #edf3ff; border-color: #c7d5ff; color: #2352ff; }
+.text-link, .text-button, .eyebrow { color: #2f55e6; }
+.skip-link { background: var(--brand-navy); }
+.brand-wordmark { display: block; width: 180px; height: auto; max-width: 100%; object-fit: contain; }
+.brand { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding-bottom: 24px; }
+.brand .brand-caption { color: #425677; font-family: var(--font-sans); font-size: 11px; font-weight: 600; letter-spacing: .13em; }
+.sdwe-brand-mark { display: inline-flex; align-items: center; justify-content: center; gap: 1px; width: 54px; height: 54px; border-radius: 16px; background: var(--brand); color: #fff; font-family: var(--font-brand-display), sans-serif; font-size: 17px; font-weight: 700; letter-spacing: -.08em; }
+.sdwe-brand-mark > span { font-weight: 500; }
+.sidebar { background: #def0fd; color: #283e62; border-color: #cddff1; scrollbar-color: #b2c8e3 transparent; }
+.workspace-switch { border-color: #bfd4ee; background: #ffffff80; }
+.workspace-switch strong, .sidebar-user strong, .workspace-note strong { color: #162f56; }
+.workspace-switch div > span, .workspace-switch > svg, .nav-label, .sidebar-user span { color: #4d6482; }
+.workspace-avatar { color: #2352ff; background: #e4eaff; }
+.nav-item, .nav-item svg { color: #3e5678; }
+.nav-item:hover { color: #152f62; background: #ffffffb3; }
+.nav-item.active { color: #fff; background: #3863ff; border-color: #3863ff; box-shadow: 0 4px 14px #3863ff20; }
+.nav-item.active svg { color: #fff; }
+.nav-active-dot { background: #ceebff; }
+.workspace-note { background: #ffffff80; border-color: #bfd4ee; }
+.workspace-note p { color: #4b6283; }
+.workspace-note a, .small-icon { color: #2352ff; }
+.sidebar-user { border-color: #bfd4ee; }
+.sidebar-user .avatar { background: #cfddff; color: #2446aa; }
+.sidebar-user .icon-button { color: #435b7c; }
+.sidebar-user .icon-button:hover { background: #c9def8; color: #152f62; }
+.avatar, .contact-avatar { background: #eaf0ff; color: #3456b6; }
+.settings-nav > a.active, .tab.active { background: #edf2ff; color: #2352ff; }
+.tabs > button.active, .conversation-list-label > button.selected { color: #2352ff; }
+.day-picker > label.selected { background: #edf2ff; color: #2352ff; border-color: #bdccff; }
+.progress > div, .chart-bar, .conversation-item.active::before { background: #3863ff; }
+.settings-nav > a.active { border-color: #cbd8ff; }
+.page-header h1, .login-form h2 { color: var(--brand-navy); }
+.topbar { background: #ffffffed; }
+.contact-summary, .import-preview, .preview-toolbar { border-color: var(--border); }
+.overview-banner { background: #eaf3ff; border-color: #cbdcf8; }
+.overview-banner strong, .getting-started h2 { color: #183360; }
+.overview-banner p, .getting-started p { color: #4b6283; }
+.overview-banner a, .overview-banner svg { color: #2352ff; }
+.getting-started { background: #f8fbff; border-color: #cbdcf8; }
+.conversation-item.active, .conversation-item.selected { background: #edf3ff; border-left-color: #3863ff; }
+.conversation-item:hover { background: #f4f7ff; }
+.thread-message .plain-preview { color: #24334e; }
+.mail-person-avatar, .sender-avatar { background: #e8efff; color: #2f55e6; }
+.tracking-on { background: #edf2ff; color: #2352ff; }
+.mail-attach, .mail-formatting .icon-button:hover { color: #2352ff; }
+.boot > .sdwe-brand-mark, .boot-error > .sdwe-brand-mark { margin-bottom: 24px; }
+.boot-error h1 { color: var(--brand-navy); }
+.boot-error p { color: var(--text-secondary); }
+.login-story { background: #ceebff; color: #101828; }
+.login-brand { flex-direction: column; align-items: flex-start; gap: 12px; }
+.login-brand .brand-wordmark { width: 230px; }
+.login-brand .brand-caption { color: #35547e; font-size: 11px; font-weight: 600; letter-spacing: .16em; }
+.login-copy > .eyebrow { color: #2f55e6; }
+.login-copy h1 { color: #05080c; font-family: var(--font-brand-display), var(--font-sans); font-weight: 600; }
+.login-copy h1 > span { color: #3863ff; }
+.login-copy > p { color: #344c70; }
+.login-pill { color: #224177; background: #ffffff80; border-color: #b4d5f4; }
+.login-story-footer { color: #3b587f; }
+.coastal-art { opacity: .7; pointer-events: none; }
+.sun { background: #3863ff; box-shadow: 0 0 120px #2370ff50; }
+.coast-one { background: #a9d4ff; }
+.coast-two { background: #78b2ff; }
+.coast-three { background: #3863ff; }
+.login-form > .eyebrow { color: #2f55e6; }
+.login-form-side, .login-form { min-width: 0; }
+.login-form > .login-help { white-space: normal; align-items: flex-start; text-align: center; }
+.login-help > svg { flex-shrink: 0; margin-top: 3px; }
+.login-form .field > .field-label { color: #344767; }
+.login-form-footer { color: #63718a; }
+.app-footer { background: #ffffff80; }
+@media(max-width: 1100px) { .sidebar .brand-wordmark { width: 170px; } }
+@media(max-width: 760px) { .login-brand .brand-wordmark { width: 175px; } .login-brand { gap: 8px; } .login-copy { margin-top: 28px; } }

@@ -11,6 +11,8 @@ export const config = {
   allowedOrigins: env.ALLOWED_ORIGINS || '',
   encryptionKey: env.ENCRYPTION_KEY || '',
   schedulerSecret: env.SCHEDULER_SECRET || '',
+  websiteLeadsSecret: env.WEBSITE_LEADS_SECRET || '',
+  websiteLeadsUrl: env.WEBSITE_LEADS_URL || '',
   liveSendEnabled: env.LIVE_SEND_ENABLED === 'true',
   sessionHours: 12,
   trustProxy: Number(env.TRUST_PROXY_HOPS || 0),

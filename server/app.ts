@@ -15,6 +15,7 @@ import { HttpError } from './lib/util.js';
 import { apiCors } from './cors.js';
 import { activateLiveInbox,liveInboxStatus } from './lib/live-inbox.js';
 import { installHostingerScheduler,SchedulerInstallError } from './lib/scheduler-install.js';
+import { authorizeWebsiteLead,receiveWebsiteLead,syncWebsiteLeads } from './website-leads.js';
 import { HttpResponse,requestContext,parseBody,runHandlers,errorResponse,nodeHandler } from './http.js';
 
 const routes=[
@@ -55,14 +56,23 @@ export async function handleRequest(request:globalThis.Request,options?:{remoteA
       await parseBody(request,req,mailUpload?8*1024*1024:2200*1024);
       await runHandlers([loadSession,csrfProtect],req,res);
       if(!res.headersSent){let matched=false;for(const [prefix,router] of routes){if(await router.dispatch(req,res,prefix)){matched=true;break;}}if(!matched)throw new HttpError(404,'API route not found.');}
+    } else if(req.path==='/integrations/website/leads'&&req.method==='POST'){
+      authorizeWebsiteLead(req.headers.authorization);
+      await parseBody(request,req,24*1024);
+      res.set('Cache-Control','no-store').status(201).json(await receiveWebsiteLead(req.body));
     } else if(req.path==='/internal/tick'&&req.method==='POST'){
       if(!config.schedulerSecret||!secureEqual(req.headers.authorization||'','Bearer '+config.schedulerSecret))throw new HttpError(401,'Unauthorized scheduler request.');
       await parseBody(request,req,1024);
       const command=z.object({action:z.enum(['run','status','install','activate-inbox']).default('run'),mode:z.enum(['all','sync','inbox']).default('all')}).strict().parse(req.body||{});
+      let workerBudget=18000;
+      if(command.action==='run'&&config.websiteLeadsUrl&&config.websiteLeadsSecret.length>=32){
+        workerBudget=12000;
+        try{await syncWebsiteLeads();}catch{console.warn(JSON.stringify({event:'website_lead_sync_failed'}));}
+      }
       const result=command.action==='status'?await liveInboxStatus()
         :command.action==='install'?await installHostingerScheduler()
         :command.action==='activate-inbox'?await activateLiveInbox()
-        :await runWorker({budgetMs:18000,maxJobs:10,syncOnly:command.mode==='sync',inboxOnly:command.mode==='inbox'});
+        :await runWorker({budgetMs:workerBudget,maxJobs:10,syncOnly:command.mode==='sync',inboxOnly:command.mode==='inbox'});
       res.set('Cache-Control','no-store').json(result);
     } else {
       if(req.path.startsWith('/unsubscribe/'))await parseBody(request,req,2048,'form');

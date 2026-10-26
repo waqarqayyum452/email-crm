@@ -1,3 +1,4 @@
+import { campaignImageRouter,campaignImagePublicRouter } from './campaign-designs.js';
 import { isIP } from 'node:net';
 import { z } from 'zod';
 import { config,validateConfig } from './config.js';
@@ -23,7 +24,7 @@ const routes=[
   ['/api/auth',authRouter],['/api/users',userRouter],['/api/settings',settingsRouter],
   ['/api/segments',segmentRouter],['/api/accounts',accountRouter],['/api/contacts',contactRouter],['/api/stages',stageRouter],
   ['/api/tasks',taskRouter],['/api/suppressions',suppressionRouter],['/api/imports',importRouter],
-  ['/api/campaigns',campaignRouter],['/api/templates',templateRouter],['/api/inbox',mailToolsRouter],['/api/inbox',inboxRouter],['/api',reportingRouter],
+  ['/api/campaign-images',campaignImageRouter],['/api/campaigns',campaignRouter],['/api/templates',templateRouter],['/api/inbox',mailToolsRouter],['/api/inbox',inboxRouter],['/api',reportingRouter],
 ] as const;
 
 function securityHeaders(res:HttpResponse){
@@ -54,7 +55,7 @@ export async function handleRequest(request:globalThis.Request,options?:{remoteA
       await runHandlers([apiCors],req,res);
       if(res.headersSent)return res.toResponse(req.method);
       const mailUpload=/^\/api\/inbox\/(?:compose|drafts(?:\/[^/]+)?|[^/]+\/reply)\/?$/.test(req.path);
-      await parseBody(request,req,mailUpload?8*1024*1024:2200*1024);
+      await parseBody(request,req,(mailUpload||req.path==='/api/campaign-images')?8*1024*1024:2200*1024);
       await runHandlers([loadSession,csrfProtect],req,res);
       if(!res.headersSent){let matched=false;for(const [prefix,router] of routes){if(await router.dispatch(req,res,prefix)){matched=true;break;}}if(!matched)throw new HttpError(404,'API route not found.');}
     } else if(req.path==='/integrations/website/leads'&&req.method==='POST'){
@@ -77,7 +78,7 @@ export async function handleRequest(request:globalThis.Request,options?:{remoteA
       res.set('Cache-Control','no-store').json(result);
     } else {
       if(req.path.startsWith('/unsubscribe/'))await parseBody(request,req,2048,'form');
-      if(!await publicRouter.dispatch(req,res))throw new HttpError(404,'Not found.');
+      if(!await campaignImagePublicRouter.dispatch(req,res)&&!await publicRouter.dispatch(req,res))throw new HttpError(404,'Not found.');
     }
   } catch(error){errorResponse(error instanceof SchedulerInstallError?new HttpError(503,error.message,{code:error.code}):error,res);}
   return res.toResponse(req.method);

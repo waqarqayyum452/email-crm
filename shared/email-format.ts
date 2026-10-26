@@ -17,3 +17,5 @@ for (const side of ['top','right','bottom','left']) {
 }
 export const cidPattern = /^[a-zA-Z0-9][a-zA-Z0-9._@-]{0,149}$/;
 export const editorParagraphStyle = 'margin:0 0 12px 0';
+
+Object.assign(emailStyles, {'display':[/^(?:none|block|inline|inline-block|table)$/i], 'overflow':[/^hidden$/i], 'max-height':[/^(?:0|[0-9]{1,3}px)$/i], 'opacity':[/^(?:0|1)$/], 'mso-hide':[/^all$/i], 'border-top-color':[/^#[a-f0-9]{6}$/i], 'border-top-width':[/^[0-9]{1,2}px$/], 'border-top-style':[/^solid$/i]});

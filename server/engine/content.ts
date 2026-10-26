@@ -1,3 +1,5 @@
+import { buildDesignedEmail, designSchema } from '../../shared/campaign-design.js';
+import { config } from '../config.js';
 import { sanitizeFormattedEmail } from '../lib/html.js';
 import { DateTime } from 'luxon';
 
@@ -8,7 +10,7 @@ export function mergeFields(text: string, contact: Record<string, any>, html = f
   const missing = new Set<string>();
   const result = text.replace(/{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*(?:\|([^{}]*))?}}/g, (_all, key, fallback) => {
     const v = values[key] == null || String(values[key]).trim() === '' ? fallback : values[key];
-    if (v == null || String(v).trim() === '') { missing.add(key); return ''; }
+    if (v == null || (fallback === undefined && String(v).trim() === '')) { missing.add(key); return ''; }
     return html ? escapeHtml(v) : String(v);
   });
   if (missing.size) throw new Error(`Missing personalization: ${[...missing].join(', ')}`);
@@ -24,11 +26,13 @@ export function sanitizeEmail(html: string, allowImages = false, rewrite?: (url:
   return sanitizeFormattedEmail(html,allowImages?'stored':'none',undefined,rewrite);
 }
 
-export function renderStep(step: any, contact: any) {
-  const subject = mergeFields(step.subject, contact).replace(/[\r\n]/g, ' ');
-  const body_text = mergeFields(step.body_text, contact);
-  const body_html = step.body_html ? sanitizeEmail(mergeFields(step.body_html, contact, true)) : null;
-  return { subject, body_text, body_html };
+export function renderStep(step:any,contact:any,options:{email_type?:string}={}) {
+ const subject=mergeFields(step.subject,contact).replace(/[\r\n]/g,' ');
+ let source={body_text:step.body_text,body_html:step.body_html};
+ if(options.email_type!=='plain'&&step.design){const design=designSchema.parse(typeof step.design==='string'?JSON.parse(step.design):step.design);design.blocks=design.blocks.map(b=>b.type==='heading'||b.type==='paragraph'?{...b,html:sanitizeFormattedEmail(b.html)}:b);source=buildDesignedEmail(design,config.appUrl,step.preview_text||'');}
+ const body_text=mergeFields(source.body_text||'',contact);
+ const body_html=options.email_type==='plain'?null:source.body_html?sanitizeEmail(mergeFields(source.body_html,contact,true),!!step.design):null;
+ return {subject,body_text,body_html};
 }
 
 export interface WindowSettings { timezone: string; sending_days: number[]; sending_start: string; sending_end: string; }

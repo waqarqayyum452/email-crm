@@ -1,3 +1,5 @@
+import {ensureCampaignDesigns,normalizeCampaignDraft,assertCampaignReady} from './campaign-designs.js';
+import {designSchema} from '../shared/campaign-design.js';
 import { ensureMailboxSignatures } from './mailbox-signatures.js';
 import { Router } from './http.js';
 import { z } from 'zod';
@@ -14,9 +16,9 @@ import { ensureMailFeatures, enrichMail, manualContentSchema, manualContent, enc
 import { ensureInboxReads, readMessageIds } from './engine/inbox-reads.js';
 import { ensureInboxFolders, spamMessageIds } from './engine/inbox-folders.js';
 
-const stepSchema = z.object({subject:z.string().min(1).max(998).refine(s=>!/[\r\n]/.test(s),'Subject must be one line'),body_text:z.string().min(1).max(100000),body_html:z.string().max(200000).nullable().optional(),delay_days:z.number().int().min(0).max(365).default(0)});
-const draftSchema = z.object({name:z.string().trim().min(1).max(200),account_id:z.string().uuid(),steps:z.array(stepSchema).min(1).max(10),contact_ids:z.array(z.string().uuid()).max(10000).default([]),open_tracking:z.boolean().default(false),click_tracking:z.boolean().default(false),scheduled_at:z.string().datetime({offset:true}).nullable().optional()});
-const templateSchema = z.object({name:z.string().trim().min(1).max(200),subject:stepSchema.shape.subject,body_text:stepSchema.shape.body_text,body_html:stepSchema.shape.body_html});
+const stepSchema = z.object({subject:z.string().max(998).refine(s=>!/[\r\n]/.test(s),'Subject must be one line'),body_text:z.string().max(100000),body_html:z.string().max(200000).nullable().optional(),delay_days:z.number().int().min(0).max(365).default(0),design:designSchema.nullable().optional(),preview_text:z.string().max(300).default('')});
+const draftSchema = z.object({name:z.string().trim().min(1).max(200),account_id:z.string().uuid(),email_type:z.enum(['plain','designed']).optional(),sender_name:z.string().max(200).refine(v=>!/[\r\n]/.test(v)).default(''),reply_to:z.union([z.string().email().max(254),z.literal('')]).default(''),steps:z.array(stepSchema).min(1).max(10),contact_ids:z.array(z.string().uuid()).max(10000).default([]),open_tracking:z.boolean().default(false),click_tracking:z.boolean().default(false),scheduled_at:z.string().datetime({offset:true}).nullable().optional()});
+const templateSchema = z.object({name:z.string().trim().min(1).max(200),subject:stepSchema.shape.subject,body_text:stepSchema.shape.body_text,body_html:stepSchema.shape.body_html,design:designSchema.nullable().optional(),preview_text:z.string().max(300).default(''),email_type:z.enum(['plain','designed']).nullable().optional()});
 const parseContact = (c:any) => ({...c,tags:json(c.tags,[]),custom_fields:json(c.custom_fields,{})});
 const publicCampaign = (c:any) => ({...c,draft:json(c.draft,{}),open_tracking:!!c.open_tracking,click_tracking:!!c.click_tracking});
 async function campaignOr404(campaignId: string, trx: Database = db) { const campaign = await trx('campaigns').where({id:campaignId}).first(); if (!campaign) throw new HttpError(404,'Campaign not found.'); return campaign; }
@@ -29,7 +31,7 @@ async function audience(draft: any, account: any, trx: Database = db) {
   for (const contactId of contactIds) {
     const raw = byId.get(contactId), contact = raw ? parseContact(raw) : null;
     let reason = await contactEligibility(contact,account,trx);
-    if (!reason) try { for (const step of draft.steps) renderStep(step,contact); } catch(error) { reason = (error as Error).message; }
+    if (!reason) try { for (const step of draft.steps) renderStep(step,contact,draft); } catch(error) { reason = (error as Error).message; }
     (reason ? excluded : included).push({id:contactId,email:contact?.email || '',company_name:contact?.company_name || '',reason});
   }
   return {included,excluded};
@@ -38,22 +40,23 @@ async function audience(draft: any, account: any, trx: Database = db) {
 async function publish(campaign: any, draft: any, actorId: string, trx: Database) {
   const latest = await trx('campaign_versions').where({campaign_id:campaign.id}).max({number:'number'}).first();
   const versionId = id(), number = Number(latest?.number || 0) + 1;
-  const snapshot = {...draft,account_id:campaign.account_id,steps:draft.steps.map((s:any,i:number)=>({...s,body_html:s.body_html?sanitizeEmail(s.body_html):null,delay_days:i===0?0:s.delay_days}))};
+  const snapshot = {...draft,account_id:campaign.account_id,steps:draft.steps.map((s:any,i:number)=>({...s,body_html:s.body_html?sanitizeEmail(s.body_html,!!s.design):null,delay_days:i===0?0:s.delay_days}))};
   await trx('campaign_versions').insert({id:versionId,campaign_id:campaign.id,number,snapshot:JSON.stringify(snapshot),created_by:actorId,created_at:new Date()});
-  await trx('sequence_steps').insert(snapshot.steps.map((s:any,position:number)=>({id:id(),version_id:versionId,position,...s})));
+  await trx('sequence_steps').insert(snapshot.steps.map((s:any,position:number)=>({id:id(),version_id:versionId,position,subject:s.subject,body_text:s.body_text,body_html:s.body_html,delay_days:s.delay_days,preview_text:s.preview_text||'',design:s.design?JSON.stringify(s.design):null})));
   return {id:versionId,number,snapshot};
 }
 
 export const campaignRouter = Router();
-campaignRouter.use(requireUser);
+campaignRouter.use(requireUser,async(_req,_res,next)=>{await ensureCampaignDesigns();next();});
 campaignRouter.get('/',async(_req,res)=>{
   const accepted=db('send_attempts').select('campaign_id').count({accepted:'id'}).where({status:'accepted',is_test:false}).groupBy('campaign_id').as('accepted_totals');
   const replies=db('messages').select('campaign_id').count({human_replies:'id'}).where({direction:'inbound',classification:'human_reply',is_test:false}).groupBy('campaign_id').as('reply_totals');
   const rows=await db('campaigns as c').leftJoin('email_accounts as a','a.id','c.account_id').leftJoin(accepted,'accepted_totals.campaign_id','c.id').leftJoin(replies,'reply_totals.campaign_id','c.id').select('c.*','a.email as account_email',db.raw('COALESCE(accepted_totals.accepted,0) as accepted'),db.raw('COALESCE(reply_totals.human_replies,0) as human_replies')).orderBy('c.created_at','desc');
   res.json({items:rows.map(c=>({...publicCampaign(c),accepted:Number(c.accepted),human_replies:Number(c.human_replies)}))});
 });
+campaignRouter.post('/render-preview',async(req,res)=>{const input=z.object({email_type:z.enum(['plain','designed']),steps:z.array(stepSchema).min(1).max(10),contact_id:z.string().uuid().optional()}).parse(req.body);const normalized=await normalizeCampaignDraft(input);const contact=input.contact_id?await db('contacts').where({id:input.contact_id}).first():{first_name:'Jamie',last_name:'Rivera',company_name:'Coastal Studio',website:'https://example.com',city:'San Diego'};if(!contact)throw new HttpError(404,'Contact not found.');try{res.json({steps:normalized.steps.map(step=>renderStep(step,parseContact(contact),normalized))});}catch(error){throw new HttpError(400,(error as Error).message);}});
 campaignRouter.post('/',permit('campaigns:write'),async(req,res)=>{
-  const draft=draftSchema.parse(req.body), account=await db('email_accounts').where({id:draft.account_id}).first();
+  const draft=await normalizeCampaignDraft(draftSchema.parse(req.body)), account=await db('email_accounts').where({id:draft.account_id}).first();
   if (!account) throw new HttpError(400,'Select a mailbox.');
   const campaign={id:id(),name:draft.name,account_id:draft.account_id,status:'draft',draft:JSON.stringify(draft),scheduled_at:draft.scheduled_at?new Date(draft.scheduled_at):null,open_tracking:draft.open_tracking,click_tracking:draft.click_tracking,created_by:req.user!.id,created_at:new Date(),updated_at:new Date()};
   await db.transaction(async trx=>{await trx('campaigns').insert(campaign);await audit(req.user!.id,'campaign.created','campaign',campaign.id,{name:draft.name},trx);});
@@ -71,7 +74,7 @@ campaignRouter.patch('/:id',permit('campaigns:write'),async(req,res)=>{
   const result=await db.transaction(async trx=>{
     const c=await trx('campaigns').where({id:req.params.id}).forUpdate().first();if(!c)throw new HttpError(404,'Campaign not found.');
     if(c.status!=='draft')throw new HttpError(409,'Published campaigns require the explicit revise action.');
-    const draft=draftSchema.parse({...json<any>(c.draft,{}),...req.body});
+    const draft=await normalizeCampaignDraft(draftSchema.parse({...json<any>(c.draft,{}),...req.body}),trx);
     if(!await trx('email_accounts').where({id:draft.account_id}).first())throw new HttpError(400,'Mailbox not found.');
     await trx('campaigns').where({id:c.id}).update({name:draft.name,account_id:draft.account_id,draft:JSON.stringify(draft),scheduled_at:draft.scheduled_at?new Date(draft.scheduled_at):null,open_tracking:draft.open_tracking,click_tracking:draft.click_tracking,updated_at:new Date()});
     await audit(req.user!.id,'campaign.edited','campaign',c.id,{},trx);return campaignOr404(c.id,trx);
@@ -82,7 +85,7 @@ campaignRouter.post('/:id/preview',async(req,res)=>{
   const body=z.object({contact_id:z.string().uuid().optional()}).parse(req.body||{});
   const contact=body.contact_id?await db('contacts').where({id:body.contact_id}).first():{first_name:'Alex',last_name:'Sample',company_name:'Example Company',website:'https://example.com',city:'San Diego',custom_fields:{}};
   if(!contact)throw new HttpError(404,'Contact not found.');
-  try {res.json({steps:draft.steps.map((s:any)=>renderStep(s,parseContact(contact))),sample:!body.contact_id});}catch(error){throw new HttpError(400,(error as Error).message);}
+  try {assertCampaignReady(draft);res.json({steps:draft.steps.map((s:any)=>renderStep(s,parseContact(contact),draft)),email_type:draft.email_type,sender_name:draft.sender_name,reply_to:draft.reply_to,sample:!body.contact_id});}catch(error){throw new HttpError(400,(error as Error).message);}
 });
 campaignRouter.post('/:id/test',permit('campaigns:write'),async(req,res)=>{
   const email=normalizeEmail(z.object({email:z.string().email().max(254)}).parse(req.body).email),c=await campaignOr404(String(req.params.id)),draft=json(c.draft,{});
@@ -91,8 +94,8 @@ campaignRouter.post('/:id/test',permit('campaigns:write'),async(req,res)=>{
   let contact=await db('contacts').where({email}).first();
   if(!contact)throw new HttpError(400,'Create this controlled test address as a contact with test consent first.');
   const reason=await contactEligibility(contact,account,db,{reply:true});if(reason)throw new HttpError(400,reason);
-  let content;try{content=renderStep(draft.steps[0],parseContact(contact));}catch(error){throw new HttpError(400,(error as Error).message);}
-  const job={id:id(),kind:'send',account_id:c.account_id,campaign_id:c.id,payload:JSON.stringify({is_test:true,contact_id:contact.id,content:{...content,subject:('[TEST] '+content.subject).slice(0,998)},open_tracking:false,click_tracking:false}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()};
+  let content;try{assertCampaignReady(draft);content=renderStep(draft.steps[0],parseContact(contact),draft);}catch(error){throw new HttpError(400,(error as Error).message);}
+  const job={id:id(),kind:'send',account_id:c.account_id,campaign_id:c.id,payload:JSON.stringify({is_test:true,email_type:draft.email_type,sender_name:draft.sender_name,reply_to:draft.reply_to,contact_id:contact.id,content:{...content,subject:('[TEST] '+content.subject).slice(0,998)},open_tracking:false,click_tracking:false}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()};
   await db.transaction(async trx=>{await trx('jobs').insert(job);await audit(req.user!.id,'campaign.test_queued','campaign',c.id,{contact_id:contact.id},trx);});
   res.status(202).json({job_id:job.id,message:'Test queued. Sending remains subject to pause, consent, sync, window and capacity checks.'});
 });
@@ -101,7 +104,7 @@ campaignRouter.post('/:id/launch',permit('campaigns:write'),async(req,res)=>{
     await trx('business_settings').where({id:'agency'}).forUpdate().first();
     const c=await trx('campaigns').where({id:req.params.id}).forUpdate().first();if(!c)throw new HttpError(404,'Campaign not found.');if(c.status!=='draft')throw new HttpError(409,'Campaign has already been published.');
     const account=await trx('email_accounts').where({id:c.account_id}).first();if(account.status!=='active'||!account.verified_at)throw new HttpError(409,'Validate and activate the sending mailbox first.');
-    const draft=draftSchema.parse(json(c.draft,{})),review=await audience(draft,account,trx);if(!review.included.length)throw new HttpError(400,'No eligible contacts. Review the audience exclusions.',review);
+    const draft=draftSchema.parse(json(c.draft,{}));assertCampaignReady(draft);const review=await audience(draft,account,trx);if(!review.included.length)throw new HttpError(400,'No eligible contacts. Review the audience exclusions.',review);
     const settings=await getSettings(trx);if(!settings.business_address?.trim())throw new HttpError(400,'Enter the business address in settings before launching marketing messages.');
     const version=await publish(c,draft,req.user!.id,trx),due=draft.scheduled_at?new Date(draft.scheduled_at):new Date();
     for(const contact of review.included){const enrollmentId=id();await trx('enrollments').insert({id:enrollmentId,campaign_id:c.id,version_id:version.id,contact_id:contact.id,account_id:c.account_id,status:'active',next_step:0,created_at:new Date(),updated_at:new Date()});await trx('jobs').insert({id:id(),kind:'send',account_id:c.account_id,campaign_id:c.id,enrollment_id:enrollmentId,step_position:0,payload:JSON.stringify({}),status:'queued',due_at:due,attempts:0,created_at:new Date(),updated_at:new Date()});}
@@ -117,14 +120,14 @@ for(const action of ['pause','resume','archive'] as const)campaignRouter.post(`/
     await audit(req.user!.id,`campaign.${action}`,'campaign',c.id,{},trx);return campaignOr404(c.id,trx);});res.json(publicCampaign(result));
 });
 campaignRouter.post('/:id/revise',permit('campaigns:write'),async(req,res)=>{
-  const body=z.object({confirmed:z.literal(true),draft:draftSchema}).parse(req.body);
+  const body=z.object({confirmed:z.literal(true),draft:draftSchema}).parse(req.body);body.draft=await normalizeCampaignDraft(body.draft);assertCampaignReady(body.draft);
   const result=await db.transaction(async trx=>{await trx('business_settings').where({id:'agency'}).forUpdate().first();const c=await trx('campaigns').where({id:req.params.id}).forUpdate().first();if(!c)throw new HttpError(404,'Campaign not found.');if(!['active','paused','scheduled'].includes(c.status))throw new HttpError(409,'Only a running or paused campaign can be revised.');
     if(body.draft.account_id!==c.account_id)throw new HttpError(400,'Existing enrollments retain their original sending mailbox. Create a new campaign for a replacement mailbox.');
     const previous=json((await trx('campaign_versions').where({id:c.version_id}).first()).snapshot,{});if(JSON.stringify([...new Set(body.draft.contact_ids)].sort())!==JSON.stringify([...new Set(previous.contact_ids)].sort()))throw new HttpError(400,'Audience cannot change during revision. Create a new campaign for new contacts.');
     if((body.draft.scheduled_at?new Date(body.draft.scheduled_at).getTime():null)!==(previous.scheduled_at?new Date(previous.scheduled_at).getTime():null))throw new HttpError(400,'Published launch schedules cannot change during content revision. Pause the campaign or create a new campaign with a new launch time.');
     const inFlight=await trx('jobs').where({campaign_id:c.id,status:'leased'}).first();if(inFlight)throw new HttpError(409,'A message is currently processing. Pause and retry after its lease finishes.');
     const unknown=await trx('jobs').where({campaign_id:c.id,status:'held'}).first();if(unknown)throw new HttpError(409,'Reconcile held attempts before revising this campaign.');
-    const active=await trx('enrollments').where({campaign_id:c.id}).whereIn('status',['active','paused']);for(const e of active){const contact=parseContact(await trx('contacts').where({id:e.contact_id}).first());try{for(const step of body.draft.steps.slice(e.next_step))renderStep(step,contact);}catch(error){throw new HttpError(400,(error as Error).message);}}
+    const active=await trx('enrollments').where({campaign_id:c.id}).whereIn('status',['active','paused']);for(const e of active){const contact=parseContact(await trx('contacts').where({id:e.contact_id}).first());try{for(const step of body.draft.steps.slice(e.next_step))renderStep(step,contact,body.draft);}catch(error){throw new HttpError(400,(error as Error).message);}}
     const version=await publish(c,body.draft,req.user!.id,trx),settings=await getSettings(trx);
     for(const e of active){
       const step=version.snapshot.steps[e.next_step];await trx('enrollments').where({id:e.id}).update({version_id:version.id,...(!step?{status:'completed'}:{}),updated_at:new Date()});
@@ -137,21 +140,21 @@ campaignRouter.post('/:id/revise',permit('campaigns:write'),async(req,res)=>{
         // Only definite, unsent content can be replaced. Accepted content and
         // every published version remain immutable history.
         await trx('tracking_events').where({message_id:message.id}).delete();await trx('tracked_links').where({message_id:message.id}).delete();await trx('tracking_tokens').where({message_id:message.id}).delete();
-        const contact=parseContact(await trx('contacts').where({id:e.contact_id}).first()),rendered=renderStep(step,contact),marketing=await prepareMarketing({...message,...rendered},version.snapshot,settings,trx);
-        await trx('messages').where({id:message.id}).update({...rendered,body_text:marketing.body_text,body_html:marketing.body_html,open_tracking:marketing.open_tracking,click_tracking:marketing.click_tracking});
+        const contact=parseContact(await trx('contacts').where({id:e.contact_id}).first()),rendered=renderStep(step,contact,version.snapshot),marketing=await prepareMarketing({...message,...rendered},version.snapshot,settings,trx);
+        await trx('messages').where({id:message.id}).update({...rendered,body_text:marketing.body_text,body_html:marketing.body_html,campaign_sender_name:body.draft.sender_name||null,campaign_reply_to:body.draft.reply_to||null,open_tracking:marketing.open_tracking,click_tracking:marketing.click_tracking});
       }
     }
     await trx('campaigns').where({id:c.id}).update({name:body.draft.name,draft:JSON.stringify(body.draft),version_id:version.id,open_tracking:body.draft.open_tracking,click_tracking:body.draft.click_tracking,updated_at:new Date()});
     await audit(req.user!.id,'campaign.revised','campaign',c.id,{from:c.version_id,to:version.id,scope:'Only unsent steps; accepted messages and original sending account preserved'},trx);return campaignOr404(c.id,trx);});res.json(publicCampaign(result));
 });
 
-export const templateRouter=Router();templateRouter.use(requireUser);
-templateRouter.get('/',async(req,res)=>{const query=db('templates').orderBy('updated_at','desc');if(req.query.include_archived!=='true')query.where({archived:false});res.json({items:await query});});
-templateRouter.post('/',permit('campaigns:write'),async(req,res)=>{const body=templateSchema.parse(req.body),row={...body,body_html:body.body_html?sanitizeEmail(body.body_html):null,id:id(),archived:false,created_by:req.user!.id,created_at:new Date(),updated_at:new Date()};await db.transaction(async trx=>{await trx('templates').insert(row);await audit(req.user!.id,'template.created','template',row.id,{},trx);});res.status(201).json(row);});
-templateRouter.patch('/:id',permit('campaigns:write'),async(req,res)=>{const current=await db('templates').where({id:req.params.id}).first();if(!current)throw new HttpError(404,'Template not found.');const body=templateSchema.parse({...current,...req.body});await db.transaction(async trx=>{await trx('templates').where({id:current.id}).update({...body,body_html:body.body_html?sanitizeEmail(body.body_html):null,updated_at:new Date()});await audit(req.user!.id,'template.edited','template',current.id,{},trx);});res.json(await db('templates').where({id:current.id}).first());});
+export const templateRouter=Router();templateRouter.use(requireUser,async(_req,_res,next)=>{await ensureCampaignDesigns();next();});
+templateRouter.get('/',async(req,res)=>{const query=db('templates').orderBy('updated_at','desc');if(req.query.include_archived!=='true')query.where({archived:false});res.json({items:(await query).map(t=>({...t,design:json(t.design,null)}))});});
+templateRouter.post('/',permit('campaigns:write'),async(req,res)=>{const body=templateSchema.parse(req.body);await normalizeCampaignDraft({email_type:body.email_type||undefined,steps:[body]});const row={...body,design:body.design?JSON.stringify(body.design):null,body_html:body.body_html?sanitizeEmail(body.body_html,!!body.design):null,id:id(),archived:false,created_by:req.user!.id,created_at:new Date(),updated_at:new Date()};await db.transaction(async trx=>{await trx('templates').insert(row);await audit(req.user!.id,'template.created','template',row.id,{},trx);});res.status(201).json(row);});
+templateRouter.patch('/:id',permit('campaigns:write'),async(req,res)=>{const current=await db('templates').where({id:req.params.id}).first();if(!current)throw new HttpError(404,'Template not found.');const body=templateSchema.parse({...current,design:json(current.design,null),...req.body});await normalizeCampaignDraft({email_type:body.email_type||undefined,steps:[body]});await db.transaction(async trx=>{await trx('templates').where({id:current.id}).update({...body,design:body.design?JSON.stringify(body.design):null,body_html:body.body_html?sanitizeEmail(body.body_html,!!body.design):null,updated_at:new Date()});await audit(req.user!.id,'template.edited','template',current.id,{},trx);});res.json(await db('templates').where({id:current.id}).first());});
 templateRouter.post('/:id/duplicate',permit('campaigns:write'),async(req,res)=>{const current=await db('templates').where({id:req.params.id}).first();if(!current)throw new HttpError(404,'Template not found.');const row={...current,id:id(),name:current.name+' (copy)',archived:false,created_by:req.user!.id,created_at:new Date(),updated_at:new Date()};await db.transaction(async trx=>{await trx('templates').insert(row);await audit(req.user!.id,'template.duplicated','template',row.id,{source:current.id},trx);});res.status(201).json(row);});
 templateRouter.post('/:id/archive',permit('campaigns:write'),async(req,res)=>{if(!await db('templates').where({id:req.params.id}).first())throw new HttpError(404,'Template not found.');await db.transaction(async trx=>{await trx('templates').where({id:req.params.id}).update({archived:true,updated_at:new Date()});await audit(req.user!.id,'template.archived','template',String(req.params.id),{},trx);});res.json({ok:true});});
-templateRouter.post('/:id/preview',async(req,res)=>{const template=await db('templates').where({id:req.params.id}).first();if(!template)throw new HttpError(404,'Template not found.');const body=z.object({contact_id:z.string().uuid()}).parse(req.body);const contact=await db('contacts').where({id:body.contact_id}).first();if(!contact)throw new HttpError(404,'Contact not found.');try{res.json(renderStep(template,parseContact(contact)));}catch(error){throw new HttpError(400,(error as Error).message);}});
+templateRouter.post('/:id/preview',async(req,res)=>{const template=await db('templates').where({id:req.params.id}).first();if(!template)throw new HttpError(404,'Template not found.');const body=z.object({contact_id:z.string().uuid()}).parse(req.body);const contact=await db('contacts').where({id:body.contact_id}).first();if(!contact)throw new HttpError(404,'Contact not found.');try{res.json(renderStep(template,parseContact(contact),{email_type:template.email_type}));}catch(error){throw new HttpError(400,(error as Error).message);}});
 
 export const inboxRouter=Router();inboxRouter.use(requireUser,async(_req,_res,next)=>{await ensureMailFeatures();await ensureMailboxSignatures();await ensureInboxReads();await ensureInboxFolders();next();});
 inboxRouter.post('/process',permit('inbox:write'),async(req,res)=>{

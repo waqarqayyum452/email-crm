@@ -18,4 +18,4 @@ export function proxy(request:NextRequest){
   response.headers.set('Cross-Origin-Opener-Policy','same-origin');
   return response;
 }
-export const config={matcher:['/((?!api(?:/|$)|healthz(?:/|$)|internal(?:/|$)|t(?:/|$)|unsubscribe(?:/|$)|_next/|import-template\\.csv|favicon\\.ico).*)']};
+export const config={matcher:['/((?!api(?:/|$)|healthz(?:/|$)|email-images(?:/|$)|internal(?:/|$)|t(?:/|$)|unsubscribe(?:/|$)|_next/|import-template\\.csv|favicon\\.ico).*)']};

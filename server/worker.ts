@@ -1,3 +1,4 @@
+import {ensureCampaignDesigns} from './campaign-designs.js';
 import { randomUUID } from 'node:crypto';
 import { db, json, type Database } from './db.js';
 import { config } from './config.js';
@@ -123,6 +124,7 @@ async function actualEligibility(trx:Database,job:any,account:any,settings:any,p
 
 /** The agency settings lock serializes capacity across all mailboxes and workers. */
 export async function reserveSend(claimed:any) {
+  await ensureCampaignDesigns();
   await ensureMailFeatures();
   return db.transaction(async trx=>{
     await trx('business_settings').where({id:'agency'}).forUpdate().first();
@@ -142,15 +144,15 @@ export async function reserveSend(claimed:any) {
     const enrollment=job.enrollment_id?await trx('enrollments').where({id:job.enrollment_id}).first():null,contact=payload.is_manual===true?await trx('contacts').where({email:payload.manual_recipient}).first():await trx('contacts').where({id:enrollment?.contact_id||payload.contact_id}).first();
     const recipient=payload.is_manual===true?payload.manual_recipient:payload.is_reply?payload.reply_recipient:contact.email;
     let content=payload.content,version:any=null;
-    if(enrollment){const step=await trx('sequence_steps').where({version_id:enrollment.version_id,position:job.step_position}).first();if(!step){await trx('enrollments').where({id:enrollment.id}).update({status:'completed',updated_at:now()});await trx('jobs').where({id:job.id}).update({status:'completed',lease_owner:null,lease_until:null,updated_at:now()});return null;}version=json((await trx('campaign_versions').where({id:enrollment.version_id}).first()).snapshot,{});try{content=renderStep(step,{...contact,custom_fields:json(contact.custom_fields,{})});}catch(error){await trx('enrollments').where({id:enrollment.id}).update({status:'paused',stop_reason:(error as Error).message,updated_at:now()});return cancelJob(trx,job,(error as Error).message);}}
+    if(enrollment){const step=await trx('sequence_steps').where({version_id:enrollment.version_id,position:job.step_position}).first();if(!step){await trx('enrollments').where({id:enrollment.id}).update({status:'completed',updated_at:now()});await trx('jobs').where({id:job.id}).update({status:'completed',lease_owner:null,lease_until:null,updated_at:now()});return null;}version=json((await trx('campaign_versions').where({id:enrollment.version_id}).first()).snapshot,{});try{content=renderStep(step,{...contact,custom_fields:json(contact.custom_fields,{})},version);}catch(error){await trx('enrollments').where({id:enrollment.id}).update({status:'paused',stop_reason:(error as Error).message,updated_at:now()});return cancelJob(trx,job,(error as Error).message);}}
     let attempt=await trx('send_attempts').where({job_id:job.id}).first();
     if(attempt&&['unknown','submitting'].includes(attempt.status)){await trx('jobs').where({id:job.id}).update({status:'held',lease_owner:null,lease_until:null,updated_at:now()});return null;}
     if(attempt?.status==='accepted'){await finishAccepted(attempt.id,new Date(attempt.accepted_at),trx);return null;}
     const messageId=attempt?.message_id||`<${job.id}@${account.email.split('@')[1]}>`;
     if(!attempt){attempt={id:id(),job_id:job.id,account_id:account.id,campaign_id:job.campaign_id||null,enrollment_id:job.enrollment_id||null,contact_id:contact?.id||null,message_id:messageId,recipient,status:'reserved',retryable:false,is_test:!!payload.is_test,is_reply:!!payload.is_reply,submission_count:1,reserved_at:now(),created_at:now()};await trx('send_attempts').insert(attempt);}else{await trx('send_attempts').where({id:attempt.id}).update({status:'reserved',reserved_at:now(),submitted_at:null,accepted_at:null,retryable:false,error_code:null,error_message:null,submission_count:Number(attempt.submission_count||0)+1});}
     let message=await trx('messages').where({attempt_id:attempt.id}).first(),headers:any={};
-    if(!message){message={id:id(),account_id:account.id,contact_id:contact?.id||null,campaign_id:job.campaign_id||null,enrollment_id:job.enrollment_id||null,attempt_id:attempt.id,direction:'outbound',message_id:messageId,in_reply_to:payload.in_reply_to||null,references_json:JSON.stringify(payload.references||[]),from_email:account.email,to_email:recipient,subject:content.subject,body_text:content.body_text,body_html:content.body_html||null,classification:'outbound',is_test:!!payload.is_test,received_at:now(),created_at:now()};await trx('messages').insert(message);
-      await saveMessageDetails(message,{from_name:account.sender_name||settings.sender_name,to_name:contact?[contact.first_name,contact.last_name].filter(Boolean).join(' '):'',attachments:payload.is_manual===true?payload.attachments||[]:[]},trx);
+    if(!message){message={id:id(),account_id:account.id,contact_id:contact?.id||null,campaign_id:job.campaign_id||null,enrollment_id:job.enrollment_id||null,attempt_id:attempt.id,direction:'outbound',message_id:messageId,in_reply_to:payload.in_reply_to||null,references_json:JSON.stringify(payload.references||[]),from_email:account.email,to_email:recipient,subject:content.subject,body_text:content.body_text,body_html:content.body_html||null,campaign_sender_name:(version||payload).sender_name||null,campaign_reply_to:(version||payload).reply_to||null,classification:'outbound',is_test:!!payload.is_test,received_at:now(),created_at:now()};await trx('messages').insert(message);
+      await saveMessageDetails(message,{from_name:message.campaign_sender_name||account.sender_name||settings.sender_name,to_name:contact?[contact.first_name,contact.last_name].filter(Boolean).join(' '):'',attachments:payload.is_manual===true?payload.attachments||[]:[]},trx);
       if(payload.is_manual===true){const tracking=await prepareManualTracking(message,payload.open_tracking===true,trx);message={...message,...tracking};await trx('messages').where({id:message.id}).update(tracking);}
       else if(!payload.is_reply){const marketing=await prepareMarketing(message,version||payload,settings,trx);headers=marketing.headers;message={...message,body_text:marketing.body_text,body_html:marketing.body_html};await trx('messages').where({id:message.id}).update({body_text:message.body_text,body_html:message.body_html,open_tracking:marketing.open_tracking,click_tracking:marketing.click_tracking});}
     }else if(!payload.is_reply&&payload.is_manual!==true){const unsub=await trx('tracking_tokens').where({message_id:message.id,kind:'unsubscribe'}).first();if(unsub){headers={'List-Unsubscribe':`<${config.appUrl.replace(/\/$/,'')}/unsubscribe/${unsub.id}>`,'List-Unsubscribe-Post':'List-Unsubscribe=One-Click'};}}
@@ -202,8 +204,8 @@ async function sendJob(job:any,deadline:number) {
     const message=prepared.message;
     submissionStarted=true;
     const result=await bounded<any>(transport.sendMail({
-      from:{name:prepared.account.sender_name||prepared.settings.sender_name,address:prepared.account.email},
-      to:prepared.recipient,messageId:prepared.attempt.message_id,
+      from:{name:message.campaign_sender_name||prepared.account.sender_name||prepared.settings.sender_name,address:prepared.account.email},
+      to:prepared.recipient,replyTo:message.campaign_reply_to||undefined,messageId:prepared.attempt.message_id,
       subject:message.subject,text:message.body_text,html:message.body_html||undefined,
       inReplyTo:message.in_reply_to||undefined,references:json(message.references_json,[]),headers:prepared.headers,
       attachments:prepared.attachments,

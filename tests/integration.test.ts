@@ -143,5 +143,12 @@ describe.skipIf(!enabled)('real database API vertical slice (isolated *_test onl
     expect((await owner.delete('/api/contacts/'+contact.id).set('x-csrf-token',csrf)).status).toBe(200);expect(await db('audit_logs').where({entity_type:'contact',entity_id:contact.id,action:'contact_deleted'})).toHaveLength(1);
     const {contactEligibility}=await import('../server/engine/policy.js');expect(await contactEligibility(await db('contacts').where({id:contact.id}).first(),await db('email_accounts').where({id:accountId}).first())).toBe('Contact no longer exists');
   });
+  it('protects campaign image uploads while serving durable raster images to email recipients',async()=>{
+    const payload={content_type:'image/png',content_base64:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jVxkAAAAASUVORK5CYII='};
+    expect((await owner.post('/api/campaign-images').send(payload)).status).toBe(403);expect((await member.post('/api/campaign-images').set('x-csrf-token',memberCsrf).send(payload)).status).toBe(403);
+    expect((await owner.post('/api/campaign-images').set('x-csrf-token',csrf).send({...payload,content_base64:Buffer.from('<svg onload="alert(1)"/>').toString('base64')})).status).toBe(400);
+    const uploaded=await owner.post('/api/campaign-images').set('x-csrf-token',csrf).send(payload);expect(uploaded.status,uploaded.body.error).toBe(201);expect(uploaded.body.id).toMatch(/^[a-f0-9]{64}$/);const read=await request(createApp()).get('/email-images/'+uploaded.body.id);expect(read.status).toBe(200);expect(read.headers['content-type']).toContain('image/png');expect(read.headers['x-content-type-options']).toBe('nosniff');expect(read.headers['cross-origin-resource-policy']).toBe('cross-origin');
+    expect((await request(createApp()).get('/email-images/not-valid')).status).toBe(404);
+  });
   it('logs out and invalidates the database session',async()=>{expect((await owner.post('/api/auth/logout').set('x-csrf-token',csrf)).status).toBe(200);expect((await owner.get('/api/contacts')).status).toBe(401);});
 });

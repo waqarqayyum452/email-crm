@@ -21,16 +21,16 @@ export async function prepareManualTracking(message:any, enabled:boolean, trx:Da
   return {body_html:html+`<img src="${trackingUrl('open',trackingToken)}" width="1" height="1" alt="">`,open_tracking:true};
 }
 
-export async function prepareMarketing(message: any, options: {open_tracking?:boolean;click_tracking?:boolean}, settings: any, trx: Database) {
+export async function prepareMarketing(message: any, options: {open_tracking?:boolean;click_tracking?:boolean;email_type?:string}, settings: any, trx: Database) {
   const unsubscribeToken=token(),trackingToken=token(),now=new Date();
-  const openTracking=!!options.open_tracking&&!message.is_test,clickTracking=!!options.click_tracking&&!message.is_test;
+  const openTracking=!!options.open_tracking&&options.email_type!=='plain'&&!message.is_test,clickTracking=!!options.click_tracking&&!message.is_test;
   const tokens=[{id:unsubscribeToken,message_id:message.id,campaign_id:message.campaign_id,contact_id:message.contact_id,kind:'unsubscribe',created_at:now}];
   if(openTracking||clickTracking)tokens.push({id:trackingToken,message_id:message.id,campaign_id:message.campaign_id,contact_id:message.contact_id,kind:'tracking',created_at:now});
   await trx('tracking_tokens').insert(tokens);
   const unsubscribeUrl=`${base()}/unsubscribe/${unsubscribeToken}`,links:any[]=[];
   const rewrite=(url:string)=>{const destination=safeDestination(url);if(!clickTracking||!destination||destination.startsWith(`${base()}/unsubscribe/`))return url;const linkToken=token();links.push({id:id(),token:linkToken,message_id:message.id,campaign_id:message.campaign_id,url:destination,created_at:now});return trackingUrl('click',linkToken);};
   let text=String(message.body_text).replace(/https?:\/\/[^\s<>"']+/gi, (url:string)=>{const trailing=url.match(/[.,;!?)]+$/)?.[0]||'';return rewrite(trailing?url.slice(0,-trailing.length):url)+trailing;});
-  let html=message.body_html?sanitizeEmail(message.body_html,false,rewrite):null;
+  let html=options.email_type==='plain'?null:message.body_html?sanitizeEmail(message.body_html,options.email_type==='designed',rewrite):null;
   const signature=String(settings.signature||'').trim(),address=String(settings.business_address||'').trim(),copy=String(settings.unsubscribe_copy||'Unsubscribe from these emails').trim();
   text+=`${signature?'\n\n'+signature:''}\n\n${address}\n${copy}: ${unsubscribeUrl}`;
   if(html)html+=`${signature?'<p>'+escapeHtml(signature).replace(/\n/g,'<br>')+'</p>':''}<p>${escapeHtml(address)}</p><p><a href="${unsubscribeUrl}">${escapeHtml(copy)}</a></p>`;

@@ -1,3 +1,8 @@
+import nodemailer from 'nodemailer';
+import {simpleParser} from 'mailparser';
+import {emptyDesign,type Design} from '../shared/campaign-design.js';
+import {campaignImageRouter,campaignImagePublicRouter} from '../server/campaign-designs.js';
+import {templateRouter} from '../server/campaigns.js';
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
@@ -22,7 +27,7 @@ const enabled=process.env.RUN_DB_TESTS==='true'&&Boolean(process.env.DB_NAME?.en
 const tables=['audit_logs','tracking_events','tracked_links','tracking_tokens','mailbox_checkpoints','messages','send_attempt_events','send_attempts','jobs','enrollments','sequence_steps','campaign_versions','campaigns','templates','import_results','imports','suppressions','tasks','notes','deals','contact_consents','contacts','email_accounts','sessions','users'];
 const uuid=()=>randomUUID(),date=()=>new Date();
 let actor:any,account:any,contact:any;
-const app=httpFixture({middleware:[(req,_res,next)=>{req.user=actor;next();}],mounts:[[publicRouter],[campaignRouter,'/api/campaigns'],[inboxRouter,'/api/inbox']]});
+const app=httpFixture({middleware:[(req,_res,next)=>{req.user=actor;next();}],mounts:[[campaignImageRouter,'/api/campaign-images'],[campaignImagePublicRouter],[templateRouter,'/api/templates'],[publicRouter],[campaignRouter,'/api/campaigns'],[inboxRouter,'/api/inbox']]});
 
 async function insertAccount(extra:any={}){
   const row={id:uuid(),label:'Controlled test',email:`mailbox-${uuid()}@example.com`,sender_name:'Test',smtp_host:'smtp.example.com',smtp_port:465,smtp_security:'tls',smtp_username:'test',smtp_secret:'never-used-by-fake',imap_host:'imap.example.com',imap_port:993,imap_security:'tls',imap_username:'test',imap_secret:'never-used-by-fake',status:'active',provider_policy:'opt_in_only',is_default:true,verified_at:date(),last_sync_at:date(),created_at:date(),updated_at:date(),...extra};await db('email_accounts').insert(row);return row;
@@ -52,7 +57,7 @@ async function outboundForCampaign(){const result=await launch();const job=await
 
 describe.skipIf(!enabled)('durable engine against an isolated MySQL/MariaDB test database',()=>{
   const previousLive=config.liveSendEnabled;
-  beforeAll(async()=>{if(!await db.schema.hasTable('users'))await up(db);config.liveSendEnabled=true;},30000);
+  beforeAll(async()=>{if(!await db.schema.hasTable('users'))await up(db);config.liveSendEnabled=true;config.encryptionKey=Buffer.alloc(32,8).toString('base64');},30000);
   afterAll(async()=>{config.liveSendEnabled=previousLive;await db.destroy();});
   beforeEach(async()=>{
     for(const table of tables)await db(table).delete();
@@ -63,6 +68,33 @@ describe.skipIf(!enabled)('durable engine against an isolated MySQL/MariaDB test
     fake.sendMail.mockReset().mockImplementation(async(mail:any)=>({accepted:[mail.to]}));fake.syncMailbox.mockReset().mockResolvedValue({processed:0,complete:true});fake.beforeTransport.mockReset().mockResolvedValue(undefined);
   });
 
+  it('saves and reopens actual plain-text campaigns, disables HTML open tracking and preserves MIME whitespace',async()=>{
+    const text='Hi {{first_name|there}},\n\n  Keep two spaces and \u{1F60A}.\nVisit https://example.com\n\nLast paragraph.';
+    const result=await createCampaign({email_type:'plain',sender_name:'Campaign Team',reply_to:'replies@example.test',open_tracking:true,steps:[{subject:'Plain {{company_name|your business}}',body_text:text,body_html:'<b>Must not send</b>',delay_days:0}]});
+    const reopened=await request(app).get('/api/campaigns/'+result.campaign.id);expect(reopened.body.draft.email_type).toBe('plain');expect(reopened.body.draft.open_tracking).toBe(false);expect(reopened.body.draft.steps[0].body_html).toBeNull();
+    const preview=await request(app).post('/api/campaigns/'+result.campaign.id+'/preview').send({contact_id:contact.id});expect(preview.status).toBe(200);expect(preview.body.steps[0].body_text).toContain('\n\n  Keep two spaces');expect(preview.body.steps[0].body_html).toBeNull();
+    expect((await request(app).post('/api/campaigns/'+result.campaign.id+'/launch').send({})).status).toBe(200);await runWorker({budgetMs:20000,maxJobs:5});expect(fake.sendMail).toHaveBeenCalledTimes(1);const mail=fake.sendMail.mock.calls[0][0];expect(mail.html).toBeUndefined();expect(mail.from.name).toBe('Campaign Team');expect(mail.replyTo).toBe('replies@example.test');expect(mail.text).toContain(preview.body.steps[0].body_text);expect(mail.text).toContain('/unsubscribe/');expect(mail.headers['List-Unsubscribe']).toBeTruthy();
+    const raw=await nodemailer.createTransport({streamTransport:true,buffer:true,newline:'windows'}).sendMail(mail);const parsed=await simpleParser(raw.message);expect(parsed.html).toBe(false);expect(parsed.text).toContain('\n\n  Keep two spaces');expect(parsed.text).toContain('\u{1F60A}');expect(parsed.replyTo?.value[0].address).toBe('replies@example.test');expect(parsed.subject).toBe(preview.body.steps[0].subject);
+  });
+  it('uses persisted design blocks for templates, previews, controlled tests and live MIME with public body images',async()=>{
+    const image='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jVxkAAAAASUVORK5CYII=';
+    const uploaded=await request(app).post('/api/campaign-images').send({content_type:'image/png',content_base64:image});expect(uploaded.status,uploaded.body.error).toBe(201);
+    const asset=await request(app).get('/email-images/'+uploaded.body.id);expect(asset.status).toBe(200);expect(asset.headers['content-type']).toContain('image/png');expect(asset.body).toEqual(Buffer.from(image,'base64'));
+    const design:Design={...emptyDesign(),background:'#eeeeee',width:560,blocks:[{id:'h',type:'heading',html:'<p>Hello {{first_name|there}} \u{1F44B}</p>',color:'#101828',font_size:28,align:'left',spacing:16},{id:'p',type:'paragraph',html:'<p><strong>Bold</strong> <em>italic</em> <u>underline</u></p><p>Second paragraph <a href="https://example.com/path">Open link</a></p><script>bad()</script>',font_size:16,color:'#344054',align:'left',spacing:20},{id:'i',type:'image',asset_id:uploaded.body.id,alt:'Coastal image',width:480,align:'center',href:'https://example.com/image',spacing:16},{id:'b',type:'button',label:'Visit {{company_name|our website}}',href:'https://example.com/button',background:'#3863ff',color:'#ffffff',align:'center',spacing:16},{id:'d',type:'divider',color:'#cccccc',spacing:16},{id:'s',type:'spacer',height:24,spacing:0}]};
+    const step={subject:'Design {{first_name|there}}',body_text:'',design,preview_text:'A private preview for {{company_name|your business}}',delay_days:0};
+    const template=await request(app).post('/api/templates').send({name:'Designed reusable',email_type:'designed',...step});expect(template.status,template.body.error).toBe(201);expect((await request(app).get('/api/templates')).body.items.find((t:any)=>t.id===template.body.id).design.blocks).toHaveLength(6);
+    const result=await createCampaign({email_type:'designed',sender_name:'Design Team',reply_to:'design-replies@example.test',open_tracking:true,click_tracking:true,steps:[step]});
+    const reopened=await request(app).get('/api/campaigns/'+result.campaign.id);expect(reopened.body.draft.steps[0].design.blocks).toHaveLength(6);expect(reopened.body.draft.steps[0].body_html).not.toContain('<script');
+    const preview=await request(app).post('/api/campaigns/'+result.campaign.id+'/preview').send({contact_id:contact.id});expect(preview.status).toBe(200);const html=preview.body.steps[0].body_html;expect(html).toContain('/email-images/'+uploaded.body.id);expect(html).toContain('display:none');expect(html).toContain('max-width:560px');expect(html).toContain('Hello Alex');expect(preview.body.steps[0].body_text).toContain('https://example.com/button');
+    const test=await request(app).post('/api/campaigns/'+result.campaign.id+'/test').send({email:contact.email});expect(test.status).toBe(202);await runWorker({budgetMs:20000,maxJobs:5});const testMail=fake.sendMail.mock.calls[0][0];expect(testMail.subject).toBe('[TEST] '+preview.body.steps[0].subject);expect(testMail.html).toContain('/email-images/'+uploaded.body.id);expect(testMail.html).not.toContain('/t/open/');expect(testMail.from.name).toBe('Design Team');
+    await db('send_attempts').where({job_id:test.body.job_id}).update({accepted_at:new Date(Date.now()-120000),reserved_at:new Date(Date.now()-120000)});
+    expect((await request(app).post('/api/campaigns/'+result.campaign.id+'/launch').send({})).status).toBe(200);await runWorker({budgetMs:20000,maxJobs:5});expect(fake.sendMail).toHaveBeenCalledTimes(2);const mail=fake.sendMail.mock.calls[1][0];expect(mail.html).toContain('/email-images/'+uploaded.body.id);expect(mail.html).toContain('/t/open/');expect(mail.html).toContain('/t/click/');expect(mail.text).toContain('/unsubscribe/');expect(mail.replyTo).toBe('design-replies@example.test');
+    const raw=await nodemailer.createTransport({streamTransport:true,buffer:true,newline:'windows'}).sendMail(mail);const parsed=await simpleParser(raw.message);expect(parsed.html).toContain('Coastal image');expect(parsed.html).toContain('font-weight:bold');expect(parsed.text).toContain('Bold italic underline');expect(parsed.attachments).toHaveLength(0);expect(parsed.html).toContain('/email-images/'+uploaded.body.id);
+  });
+  it('autosaves incomplete drafts but blocks sending, and keeps old HTML campaigns compatible',async()=>{
+    const incomplete=await createCampaign({email_type:'plain',steps:[{subject:'',body_text:'',delay_days:0}]});expect((await request(app).post('/api/campaigns/'+incomplete.campaign.id+'/launch').send({})).status).toBe(400);expect((await request(app).post('/api/campaigns/'+incomplete.campaign.id+'/test').send({email:contact.email})).status).toBe(400);
+    const old=await createCampaign({steps:[{subject:'Legacy',body_text:'Legacy body',body_html:'<p><strong>Legacy body</strong></p>',delay_days:0}]});const preview=await request(app).post('/api/campaigns/'+old.campaign.id+'/preview').send({contact_id:contact.id});expect(preview.body.steps[0].body_html).toContain('<strong>Legacy body</strong>');expect((await request(app).post('/api/campaigns/'+old.campaign.id+'/launch').send({})).status).toBe(200);
+  });
   it('claims concurrent work once using durable SKIP LOCKED leases',async()=>{
     await insertJob();await insertJob();
     const claimed=await Promise.all([claimJob(uuid()),claimJob(uuid()),claimJob(uuid())]);

@@ -36,6 +36,23 @@ export async function insertContact(c:ContactInput,userId:string,trx:Database=db
   await trx('contacts').insert(row);await syncDealStage(contactId,stage,trx);await trx('contact_consents').insert({id:id(),contact_id:contactId,status:c.consent_status,consent_status:c.consent_status,evidence:c.consent_evidence,consent_evidence:c.consent_evidence,source:c.source,user_id:userId,created_at:new Date()});await audit(userId,'contact_created','contact',contactId,{email:c.email,source:c.source,consent_status:c.consent_status},trx);
   if(c.consent_status==='revoked')await suppressEmail(c.email,'consent_revoked','contact',userId,trx);return decodeContact(row);
 }
+// Caller must require contacts:write and explicit confirmation of address control.
+// Use the caller's transaction so a rejected test never leaves a consent change behind.
+export async function registerControlledTestContact(email:string,userId:string,trx:Database) {
+  await trx('business_settings').where({id:'agency'}).forUpdate().first();
+  email=normalizeEmail(email);
+  const current=await trx('contacts').where({email}).forUpdate().first();
+  if(await trx('suppressions').where({email}).first())throw new HttpError(400,'Address is suppressed agency-wide. Test registration cannot remove an opt-out.');
+  if(current?.deleted_at)throw new HttpError(400,'This prospect was deleted. Test registration cannot restore it.');
+  if(current?.consent_status==='revoked')throw new HttpError(400,'Consent for this address has been revoked. Test registration cannot override it.');
+  if(current&&['test','opted_in'].includes(current.consent_status)&&current.consent_evidence?.trim())return current;
+  const source='campaign_test',evidence='The signed-in operator confirmed they control this address and authorize campaign test emails.';
+  if(!current)return insertContact(contactSchema.parse({email,consent_status:'test',consent_evidence:evidence,source,owner_id:userId}),userId,trx);
+  await trx('contacts').where({id:current.id}).update({consent_status:'test',consent_evidence:evidence,source:current.source||source,updated_at:new Date()});
+  await trx('contact_consents').insert({id:id(),contact_id:current.id,status:'test',consent_status:'test',evidence,consent_evidence:evidence,source,user_id:userId,created_at:new Date()});
+  await audit(userId,'contact.test_consent_confirmed','contact',current.id,{email,source},trx);
+  return {...current,consent_status:'test',consent_evidence:evidence};
+}
 export const contactRouter=Router();contactRouter.use(requireUser);contactRouter.use(async(_req,_res,next)=>{await ensureProspectDeletion();next();});
 contactRouter.get('/',async(req,res)=>{
   const query=z.object({search:z.string().max(200).default(''),page:z.coerce.number().int().min(1).max(100000).default(1),pageSize:z.coerce.number().int().min(1).max(500).default(25),sort:z.enum(['created_at','email','company_name','first_name','city','consent_status']).default('created_at'),direction:z.enum(['asc','desc']).default('desc'),stage_id:z.string().uuid().optional(),consent_status:z.enum(['unknown','opted_in','test','revoked']).optional(),segment_id:segmentId.optional()}).parse(req.query);

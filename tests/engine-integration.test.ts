@@ -68,6 +68,41 @@ describe.skipIf(!enabled)('durable engine against an isolated MySQL/MariaDB test
     fake.sendMail.mockReset().mockImplementation(async(mail:any)=>({accepted:[mail.to]}));fake.syncMailbox.mockReset().mockResolvedValue({processed:0,complete:true});fake.beforeTransport.mockReset().mockResolvedValue(undefined);
   });
 
+  it('requires explicit confirmation before atomically registering a new controlled test contact',async()=>{
+    const {campaign}=await createCampaign({steps:[{subject:'Test',body_text:'Hello {{first_name|there}}',delay_days:0}]});
+    const email='new-controlled@example.test',url='/api/campaigns/'+campaign.id+'/test';
+    expect((await request(app).post(url).send({email})).status).toBe(400);
+    expect(await db('contacts').where({email}).first()).toBeUndefined();
+    const result=await request(app).post(url).send({email:'  NEW-CONTROLLED@example.test  ',confirm_test_address:true});
+    expect(result.status).toBe(202);
+    const saved=await db('contacts').where({email}).first();expect(saved.consent_status).toBe('test');expect(saved.consent_evidence).toContain('confirmed they control');
+    expect(await db('contact_consents').where({contact_id:saved.id}).first()).toMatchObject({user_id:actor.id,consent_status:'test'});
+    expect(json((await db('jobs').where({id:result.body.job_id}).first()).payload).contact_id).toBe(saved.id);
+    expect((await request(app).post(url).send({email,confirm_test_address:true})).status).toBe(202);
+    expect(await db('contacts').where({email})).toHaveLength(1);expect(await db('contact_consents').where({contact_id:saved.id})).toHaveLength(1);
+    expect(fake.sendMail).not.toHaveBeenCalled();
+  });
+  it('requires contact permission for test registration and rolls back registration when rendering fails',async()=>{
+    const {campaign}=await createCampaign({steps:[{subject:'Test',body_text:'Hello {{missing_value}}',delay_days:0}]});const url='/api/campaigns/'+campaign.id+'/test',email='rollback@example.test';
+    actor={...actor,role:'member',permissions:['campaigns:write']};
+    expect((await request(app).post(url).send({email,confirm_test_address:true})).status).toBe(403);
+    actor={...actor,role:'owner'};
+    expect((await request(app).post(url).send({email,confirm_test_address:true})).status).toBe(400);
+    expect(await db('contacts').where({email}).first()).toBeUndefined();expect(await db('jobs').where({campaign_id:campaign.id})).toHaveLength(0);
+  });
+  it('preserves opt-ins and never overrides suppressed, revoked or deleted prospects during test registration',async()=>{
+    const {campaign}=await createCampaign({steps:[{subject:'Test',body_text:'Hello',delay_days:0}]});const url='/api/campaigns/'+campaign.id+'/test';
+    await db('contacts').where({id:contact.id}).update({consent_status:'opted_in',consent_evidence:'Original opt-in evidence'});
+    expect((await request(app).post(url).send({email:contact.email,confirm_test_address:true})).status).toBe(202);
+    expect(await db('contacts').where({id:contact.id}).first()).toMatchObject({consent_status:'opted_in',consent_evidence:'Original opt-in evidence'});
+    for(const extra of [{consent_status:'revoked'},{deleted_at:date()}]){const blocked=await insertContact(extra);expect((await request(app).post(url).send({email:blocked.email,confirm_test_address:true})).status).toBe(400);}
+    const unknown=await insertContact({consent_status:'unknown',consent_evidence:''});
+    expect((await request(app).post(url).send({email:unknown.email,confirm_test_address:true})).status).toBe(202);
+    expect(await db('contacts').where({id:unknown.id}).first()).toMatchObject({consent_status:'test'});
+    const email='suppressed-new@example.test';await suppressEmail(email,'manual_do_not_contact','test',actor.id);
+    expect((await request(app).post(url).send({email,confirm_test_address:true})).status).toBe(400);expect(await db('contacts').where({email}).first()).toBeUndefined();
+    expect(fake.sendMail).not.toHaveBeenCalled();
+  });
   it('saves and reopens actual plain-text campaigns, disables HTML open tracking and preserves MIME whitespace',async()=>{
     const text='Hi {{first_name|there}},\n\n  Keep two spaces and \u{1F60A}.\nVisit https://example.com\n\nLast paragraph.';
     const result=await createCampaign({email_type:'plain',sender_name:'Campaign Team',reply_to:'replies@example.test',open_tracking:true,steps:[{subject:'Plain {{company_name|your business}}',body_text:text,body_html:'<b>Must not send</b>',delay_days:0}]});

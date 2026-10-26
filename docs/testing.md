@@ -1,5 +1,9 @@
 # Testing and acceptance
 
+## Controlled campaign test registration (2026-10-27)
+
+The isolated MariaDB suite passes 196 tests across 19 files; TypeScript and the production build pass. New API checks cover explicit confirmation, normalized addresses, registration and queued job persistence, duplicate consent prevention, contact permissions, rollback after personalization errors, preserved opt-ins, and suppressed/revoked/deleted address rejection. The production browser campaign check verifies the confirmation is initially unchecked, resets when the address changes, upgrades a controlled unknown-consent fixture, records consent history, and resets after queuing. Live sending is disabled and no real email is submitted.
+
 ## Mailbox signatures and filtering (2026-10-24)
 
 The isolated suite passes 182 tests across 18 files. Signature checks cover persisted mailbox-specific text, blank signatures, 10000-character limits, CSRF, credential redaction, preserving existing validation, compose/quick-reply selection and immutable enqueue snapshots. The production browser walkthrough passes 25 checks, including editing a mailbox signature, switching From without losing the message, reopening a draft with its saved signature, expanded replies and mailbox filters retained through folder changes, reloads and conversation navigation. Desktop/mobile layouts and screenshots are reviewed. Production build/typechecks pass. All tests use isolated databases and fake mail transports; no live mail is submitted.

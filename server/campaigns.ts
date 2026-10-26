@@ -4,7 +4,9 @@ import { ensureMailboxSignatures } from './mailbox-signatures.js';
 import { Router } from './http.js';
 import { z } from 'zod';
 import { db, json, type Database } from './db.js';
-import { requireUser, permit, consumeRateLimit } from './auth.js';
+import { requireUser, permit, consumeRateLimit, can } from './auth.js';
+import { registerControlledTestContact } from './contacts.js';
+import { ensureProspectDeletion } from './prospect-deletion.js';
 import { HttpError, id, audit, normalizeEmail } from './lib/util.js';
 import { getSettings } from './settings.js';
 import { renderStep, sanitizeEmail, followupTime, nextSendingTime } from './engine/content.js';
@@ -88,15 +90,20 @@ campaignRouter.post('/:id/preview',async(req,res)=>{
   try {assertCampaignReady(draft);res.json({steps:draft.steps.map((s:any)=>renderStep(s,parseContact(contact),draft)),email_type:draft.email_type,sender_name:draft.sender_name,reply_to:draft.reply_to,sample:!body.contact_id});}catch(error){throw new HttpError(400,(error as Error).message);}
 });
 campaignRouter.post('/:id/test',permit('campaigns:write'),async(req,res)=>{
-  const email=normalizeEmail(z.object({email:z.string().email().max(254)}).parse(req.body).email),c=await campaignOr404(String(req.params.id)),draft=json(c.draft,{});
+  const input=z.object({email:z.string().trim().email().max(254),confirm_test_address:z.boolean().default(false)}).strict().parse(req.body);
+  if(input.confirm_test_address&&!can(req.user,'contacts:write'))throw new HttpError(403,'You need contact editing permission to register a controlled test address.');
+  const email=normalizeEmail(input.email),c=await campaignOr404(String(req.params.id)),draft=json(c.draft,{});
   const account=await db('email_accounts').where({id:c.account_id}).first();
-  if(account.status!=='active'||!account.verified_at)throw new HttpError(409,'Validate and activate the mailbox first.');
-  let contact=await db('contacts').where({email}).first();
-  if(!contact)throw new HttpError(400,'Create this controlled test address as a contact with test consent first.');
-  const reason=await contactEligibility(contact,account,db,{reply:true});if(reason)throw new HttpError(400,reason);
+  if(!account||account.status!=='active'||!account.verified_at)throw new HttpError(409,'Validate and activate the mailbox first.');
+  await ensureProspectDeletion();
+  const job=await db.transaction(async trx=>{
+  await trx('business_settings').where({id:'agency'}).forUpdate().first();
+  const contact=input.confirm_test_address?await registerControlledTestContact(email,req.user!.id,trx):await trx('contacts').where({email}).first();
+  if(!contact)throw new HttpError(400,'This test address is not in this workspace. Confirm that you control it below, or add it in Prospects with test consent.');
+  const reason=await contactEligibility(contact,account,trx,{reply:true});if(reason)throw new HttpError(400,reason);
   let content;try{assertCampaignReady(draft);content=renderStep(draft.steps[0],parseContact(contact),draft);}catch(error){throw new HttpError(400,(error as Error).message);}
   const job={id:id(),kind:'send',account_id:c.account_id,campaign_id:c.id,payload:JSON.stringify({is_test:true,email_type:draft.email_type,sender_name:draft.sender_name,reply_to:draft.reply_to,contact_id:contact.id,content:{...content,subject:('[TEST] '+content.subject).slice(0,998)},open_tracking:false,click_tracking:false}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()};
-  await db.transaction(async trx=>{await trx('jobs').insert(job);await audit(req.user!.id,'campaign.test_queued','campaign',c.id,{contact_id:contact.id},trx);});
+  await trx('jobs').insert(job);await audit(req.user!.id,'campaign.test_queued','campaign',c.id,{contact_id:contact.id},trx);return job;});
   res.status(202).json({job_id:job.id,message:'Test queued. Sending remains subject to pause, consent, sync, window and capacity checks.'});
 });
 campaignRouter.post('/:id/launch',permit('campaigns:write'),async(req,res)=>{

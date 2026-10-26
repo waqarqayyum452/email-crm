@@ -106,10 +106,12 @@ export async function enrichMail(messages: any[]) {
   for (const account of accounts) names.set(account.email, account.sender_name || settings.sender_name);
   const opens = await db('tracking_events').whereIn('message_id', ids).where({ kind: 'open' }).modify(q => { if (settings.filter_bots) q.where({ bot: false }); }).select('message_id').min({ first_opened_at: 'created_at' }).max({ last_opened_at: 'created_at' }).count({ open_count: '*' }).groupBy('message_id');
   const byOpen = new Map<string,any>(opens.map((item:any) => [item.message_id, item]));
+  const rawOpens=await db('tracking_events').whereIn('message_id',ids).where({kind:'open'}).select('message_id').count({raw_open_count:'*'}).groupBy('message_id');
+  const byRawOpen=new Map<string,number>(rawOpens.map((item:any)=>[item.message_id,Number(item.raw_open_count)]));
   return messages.map(message => {
     const detail = byId.get(message.latest_message_id || message.id), engagement = byOpen.get(message.latest_message_id || message.id);
     const files=safeFiles(detail?.attachment_manifest);
     return { ...message, from_name: names.get(message.from_email) || detail?.from_name || '', to_name: names.get(message.to_email) || detail?.to_name || '', attachments:files.filter(file=>file.disposition!=='inline'),inline_images:files.filter(file=>file.disposition==='inline'),
-      open_count: Number(engagement?.open_count || 0), first_opened_at: engagement?.first_opened_at || null, last_opened_at: engagement?.last_opened_at || null };
+      open_count: Number(engagement?.open_count || 0), raw_open_count:byRawOpen.get(message.latest_message_id||message.id)||0, excluded_open_count:Math.max(0,(byRawOpen.get(message.latest_message_id||message.id)||0)-Number(engagement?.open_count||0)), open_filter_enabled:settings.filter_bots, tracking_retention_days:settings.retention_days, first_opened_at: engagement?.first_opened_at || null, last_opened_at: engagement?.last_opened_at || null };
   });
 }

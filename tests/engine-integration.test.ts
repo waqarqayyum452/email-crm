@@ -18,6 +18,7 @@ import { config } from '../server/config.js';
 import { claimJob, reserveSend, recoverExpiredLeases, finishAccepted, runWorker, reconcileAttempt, retryFailedJobs, requestSync } from '../server/worker.js';
 import { ingestIncoming, findReply } from '../server/engine/mail.js';
 import { suppressEmail } from '../server/engine/policy.js';
+import { enrichMail,ensureMailFeatures } from '../server/engine/mail-features.js';
 import { publicRouter } from '../server/tracking.js';
 import { campaignRouter, inboxRouter } from '../server/campaigns.js';
 import { up } from '../server/migrations/001_initial.js';
@@ -488,6 +489,21 @@ describe.skipIf(!enabled)('durable engine against an isolated MySQL/MariaDB test
     const second=await db.transaction(trx=>ingestIncoming(account,failed,2,'1',trx));expect(second.message.classification).toBe('delivery_failure');expect((await db('suppressions').first()).email).toBe(contact.email);expect(await db('tracking_events').where({kind:'bounce'})).toHaveLength(1);
   });
 
+  it('counts repeated image GETs, excludes scanner requests and never records HEAD probes',async()=>{
+    await ensureMailFeatures();
+    const message=await insertInboxMessage({direction:'outbound',open_tracking:true}),token='b'.repeat(64);
+    await db('tracking_tokens').insert({id:token,message_id:message.id,kind:'tracking',created_at:date()});
+    const path='/t/open/'+token+'.gif';
+    const head=await request(app).head(path);expect(head.status).toBe(200);expect(head.headers['cross-origin-resource-policy']).toBe('cross-origin');expect(await db('tracking_events').where({message_id:message.id})).toHaveLength(0);
+    for(let n=0;n<2;n++){const response=await request(app).get(path).set('User-Agent','Mozilla/5.0');expect(response.status).toBe(200);expect(response.headers['cache-control']).toContain('no-store');}
+    await request(app).get(path).set('User-Agent','Proofpoint Scanner');
+    await request(app).get(path).set('Purpose','prefetch');
+    const [enriched]=await enrichMail([message]);expect(enriched).toMatchObject({open_count:2,raw_open_count:4,excluded_open_count:2,open_filter_enabled:true});expect(enriched.first_opened_at).toBeTruthy();expect(enriched.last_opened_at).toBeTruthy();
+    await db('business_settings').where({id:'agency'}).update({data:JSON.stringify({...defaultSettings,filter_bots:false})});
+    expect((await enrichMail([message]))[0]).toMatchObject({open_count:4,raw_open_count:4,excluded_open_count:0,open_filter_enabled:false});
+    await db('messages').where({id:message.id}).update({open_tracking:false});await request(app).get(path);expect(await db('tracking_events').where({message_id:message.id})).toHaveLength(4);
+    await request(app).get('/t/open/'+'c'.repeat(64)+'.gif');expect(await db('tracking_events').where({message_id:message.id})).toHaveLength(4);
+  });
   it('never suppresses on GET, honors one-click POST and rejects unsafe stored redirects',async()=>{
     const {prepared}=await outboundForCampaign(),token=await db('tracking_tokens').where({message_id:prepared.message.id,kind:'unsubscribe'}).first();
     expect(await db('tracking_tokens').where({message_id:prepared.message.id,kind:'tracking'})).toHaveLength(0);

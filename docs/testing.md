@@ -1,5 +1,11 @@
 # Testing and acceptance
 
+## Open tracking accuracy (2026-10-27)
+
+The isolated suite passes 197 tests across 19 files; TypeScript and the production build pass. Real HTTP fixture checks verify that repeated pixel GETs create separate events, HEAD requests never create engagement, explicit scanner/prefetch loads remain in raw counts and are excluded by the configured filter, toggling the filter changes the aggregate honestly, and pixels for disabled tracking never record events. The browser fixture checks actual Next response headers and the popup's raw/filtered counts, first/last timestamps, and caching/reading-duration explanation. No real SMTP or Gmail/Outlook account is used. Email-client caching and privacy preloading cannot be corrected into an exact count of human reads; historical events lack enough provenance to relabel reliably.
+
+The tracking-route and open-activity browser checks passed and the popup screenshot was visually reviewed. The full browser run later timed out waiting for a conversation during the mailbox-signature/filtering scenario; it is not reported as a complete browser-suite pass.
+
 ## Controlled campaign test registration (2026-10-27)
 
 The isolated MariaDB suite passes 196 tests across 19 files; TypeScript and the production build pass. New API checks cover explicit confirmation, normalized addresses, registration and queued job persistence, duplicate consent prevention, contact permissions, rollback after personalization errors, preserved opt-ins, and suppressed/revoked/deleted address rejection. The production browser campaign check verifies the confirmation is initially unchecked, resets when the address changes, upgrades a controlled unknown-consent fixture, records consent history, and resets after queuing. Live sending is disabled and no real email is submitted.

@@ -41,12 +41,19 @@ export async function prepareMarketing(message: any, options: {open_tracking?:bo
 }
 
 function validToken(value:unknown): value is string { return typeof value==='string'&&/^[a-f0-9]{64}$/.test(value); }
-async function event(req:Request,row:any,kind:'open'|'click',linkId?:string){await db('tracking_events').insert({id:id(),message_id:row.message_id,campaign_id:row.campaign_id,contact_id:row.contact_id||null,kind,link_id:linkId||null,bot:botLike(req.get('user-agent')||''),created_at:new Date()});}
+async function event(req:Request,row:any,kind:'open'|'click',linkId?:string){
+  const purpose=[req.get('purpose'),req.get('sec-purpose'),req.get('x-purpose')].filter(Boolean).join(' ');
+  await db('tracking_events').insert({id:id(),message_id:row.message_id,campaign_id:row.campaign_id,contact_id:row.contact_id||null,kind,link_id:linkId||null,bot:botLike(req.get('user-agent')||'')||/\b(prefetch|prerender|preview)\b/i.test(purpose),created_at:new Date()});
+}
 export const publicRouter=Router();
 publicRouter.get('/t/open/:token.gif',async(req,res)=>{
-  res.set({'Cache-Control':'no-store, no-cache, must-revalidate','Pragma':'no-cache','Content-Type':'image/gif'});
+  res.set({'Cache-Control':'private, no-store, no-cache, max-age=0, must-revalidate','Pragma':'no-cache','Expires':'0','Content-Type':'image/gif','Cross-Origin-Resource-Policy':'cross-origin','X-Content-Type-Options':'nosniff'});
   const value=req.params.token;
-  if(validToken(value)){const row=await db('tracking_tokens').where({id:value,kind:'tracking'}).first();if(row)await event(req,row,'open');}
+  // Link scanners and HTTP probes may check headers without loading the image.
+  if(req.method==='GET'&&validToken(value)){
+    const row=await db('tracking_tokens as t').join('messages as m','m.id','t.message_id').where({'t.id':value,'t.kind':'tracking','m.direction':'outbound','m.open_tracking':true}).select('t.*').first();
+    if(row)await event(req,row,'open');
+  }
   res.send(PIXEL);
 });
 publicRouter.get('/t/click/:token',async(req,res)=>{
@@ -54,7 +61,7 @@ publicRouter.get('/t/click/:token',async(req,res)=>{
   const row=await db('tracked_links').where({token:req.params.token}).first(),destination=row?safeDestination(row.url):null;
   if(!row||!destination)throw new HttpError(404,'Link is unavailable.');
   const message=await db('messages').where({id:row.message_id}).first();
-  await event(req,{...row,contact_id:message?.contact_id},'click',row.id);res.set('Cache-Control','no-store').redirect(302,destination);
+  if(req.method==='GET')await event(req,{...row,contact_id:message?.contact_id},'click',row.id);res.set('Cache-Control','no-store').redirect(302,destination);
 });
 publicRouter.get('/unsubscribe/:token',async(req,res)=>{
   if(!validToken(req.params.token)||!await db('tracking_tokens').where({id:req.params.token,kind:'unsubscribe'}).first())throw new HttpError(404,'Unsubscribe link not found.');

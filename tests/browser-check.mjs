@@ -136,7 +136,7 @@ try {
   await db('messages').insert({
     id: publicMessageId, account_id: composeMailboxId, contact_id: null, direction: 'outbound',
     message_id: `<public-routes-${runId}@example.test>`, references_json: '[]', from_email: `normal-inbox-${runId}@example.test`,
-    to_email: publicRecipient, subject: 'Public route fixture only', body_text: 'Never submitted to SMTP.', classification: 'outbound', is_test: false, received_at: now, created_at: now,
+    to_email: publicRecipient, open_tracking:true, subject: 'Public route fixture only', body_text: 'Never submitted to SMTP.', classification: 'outbound', is_test: false, received_at: now, created_at: now,
   });
   await db('tracking_tokens').insert([
     { id: openToken, message_id: publicMessageId, contact_id: null, kind: 'tracking', created_at: now },
@@ -165,7 +165,7 @@ try {
     expect(template.status).toBe(200); expect(await template.text()).toContain('email');
   });
   await check('Next public tracking and unsubscribe endpoints work without sign-in and preserve confirmation semantics', async () => {
-    const pixel = await fetch(`http://127.0.0.1:3100/t/open/${openToken}.gif`);
+    const pixelUrl=`http://127.0.0.1:3100/t/open/${openToken}.gif`;const probe=await fetch(pixelUrl,{method:'HEAD'});expect(probe.status).toBe(200);expect(await db('tracking_events').where({message_id:publicMessageId,kind:'open'})).toHaveLength(0);const pixel=await fetch(pixelUrl);expect(pixel.headers.get('cross-origin-resource-policy')).toBe('cross-origin');expect(pixel.headers.get('cache-control')).toContain('no-store');
     expect(pixel.status).toBe(200); expect(pixel.headers.get('content-type')).toContain('image/gif');
     expect(Buffer.from(await pixel.arrayBuffer()).subarray(0, 3).toString()).toBe('GIF');
     expect(await db('tracking_events').where({ message_id: publicMessageId, kind: 'open' })).toHaveLength(1);
@@ -672,7 +672,7 @@ try {
     await page.getByRole('button',{name:'Expand all',exact:true}).click();await expect(frame).toHaveCount(1);await expect(draft).toHaveValue('Keep my reply while collapsing messages.');
     await page.getByRole('button',{name:'Open recorded',exact:true}).first().click();
     const dialog=page.getByRole('dialog',{name:'Email open activity',exact:true});await expect(dialog.locator('dd').nth(0)).toHaveText('2');
-    await expect(dialog.locator('dd').nth(1)).not.toHaveText('Not recorded');await expect(dialog.locator('dd').nth(2)).not.toHaveText('Not recorded');await expect(dialog.locator('dd').nth(3)).toHaveText('Unavailable');
+    await expect(dialog.locator('dd').nth(1)).toHaveText('3');await expect(dialog.locator('dd').nth(2)).toHaveText('1');await expect(dialog.locator('dd').nth(3)).not.toHaveText('Not recorded');await expect(dialog.locator('dd').nth(4)).not.toHaveText('Not recorded');await expect(dialog.locator('dd').nth(5)).toHaveText('Unavailable');await expect(dialog).toContainText('Gmail may serve cached images');
     await page.screenshot({path:path.join(artifacts,'crm-inbox-open-activity.png'),fullPage:true});await dialog.getByRole('button',{name:'Close',exact:true}).click();
     await page.getByRole('button',{name:'Collapse older messages',exact:true}).click();await page.screenshot({path:path.join(artifacts,'crm-inbox-collapsed-messages.png'),fullPage:true});
     await page.goto('http://127.0.0.1:3100/overview',{waitUntil:'networkidle'});

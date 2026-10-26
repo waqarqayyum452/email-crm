@@ -1,3 +1,4 @@
+import { ensureSegments, validateSegment, addSegmentContacts } from './segments.js';
 import { Router } from './http.js';
 import { randomBytes } from 'node:crypto';
 import { parse } from 'csv-parse/sync';
@@ -36,17 +37,17 @@ export function validateImportRow(data:Record<string,any>,row:number,seen:Set<st
 function countsFor(rows:ImportRow[]) {return {total:rows.length,valid:rows.filter(r=>r.status==='valid').length,duplicate:rows.filter(r=>r.status==='duplicate').length,invalid:rows.filter(r=>r.status==='invalid').length,excluded:rows.filter(r=>r.status==='excluded').length};}
 export const importRouter=Router();importRouter.use(requireUser);
 importRouter.post('/preview',permit('contacts:write'),async(req,res)=>{
-  const body=z.object({csv:z.string().max(2*1024*1024),mapping:z.record(z.string().max(100)).optional()}).strict().parse(req.body);const {headers,records}=parseCsv(body.csv);const settings=await getSettings();
+  const body=z.object({csv:z.string().max(2*1024*1024),mapping:z.record(z.string().max(100)).optional(),segment_id:z.string().uuid().optional()}).strict().parse(req.body);await ensureSegments();if(body.segment_id)await validateSegment(body.segment_id);const {headers,records}=parseCsv(body.csv);const settings=await getSettings();
   const mapping=body.mapping||Object.fromEntries(headers.map(h=>[h,synonyms[h.toLowerCase().replace(/[^a-z0-9]/g,'_')]|| (settings.custom_fields.some(f=>f.key===h)?'custom:'+h:'ignore')]));
   const allowed=[...baseFields,...settings.custom_fields.map(f=>'custom:'+f.key),'ignore'];for(const [header,field] of Object.entries(mapping))if(!headers.includes(header)||!allowed.includes(field))throw new HttpError(400,'Invalid column mapping.');
   const mappedFields=Object.values(mapping).filter(f=>f&&f!=='ignore');if(new Set(mappedFields).size!==mappedFields.length)throw new HttpError(400,'Map each destination field once.');if(!mappedFields.includes('email'))throw new HttpError(400,'Map a column to email before previewing.');
   const data=records.map(row=>mapCsvRow(headers,row,mapping,settings.custom_fields));const emails=data.map(d=>String(d.email||''));const [present,blocked]=await Promise.all([db('contacts').whereIn('email',emails).select('email'),db('suppressions').whereIn('email',emails).select('email')]);const seen=new Set<string>(),existing=new Set(present.map(c=>c.email)),suppressed=new Set(blocked.map(c=>c.email));
   const rows=data.map((d,i)=>validateImportRow(d,i+2,seen,existing,suppressed));
   for(const row of rows.filter(r=>r.status==='valid'))try{const {notes,...c}=row.data;await validateContactReferences(c as ContactInput);}catch(err){row.status='invalid';row.errors=[err instanceof HttpError?err.message:'Invalid contact fields.'];}
-  const token=randomBytes(32).toString('hex'),importId=id(),counts=countsFor(rows);await db('imports').insert({id:importId,user_id:req.user!.id,token_hash:sha256(token),rows:JSON.stringify(rows),counts:JSON.stringify(counts),expires_at:new Date(Date.now()+30*60000),created_at:new Date()});res.json({id:importId,headers,mapping,rows,counts,token});
+  const token=randomBytes(32).toString('hex'),importId=id(),counts=countsFor(rows);await db('imports').insert({id:importId,segment_id:body.segment_id||null,user_id:req.user!.id,token_hash:sha256(token),rows:JSON.stringify(rows),counts:JSON.stringify(counts),expires_at:new Date(Date.now()+30*60000),created_at:new Date()});res.json({id:importId,headers,mapping,rows,counts,token});
 });
 importRouter.post('/confirm',permit('contacts:write'),async(req,res)=>{
-  const {token}=z.object({token:z.string().regex(/^[a-f0-9]{64}$/)}).parse(req.body);
+  await ensureSegments();const {token}=z.object({token:z.string().regex(/^[a-f0-9]{64}$/)}).parse(req.body);
   const result=await db.transaction(async trx=>{
     const staged=await trx('imports').where({token_hash:sha256(token),user_id:req.user!.id}).forUpdate().first();if(!staged)throw new HttpError(404,'Import preview not found.');if(staged.confirmed_at)return {id:staged.id,...json(staged.counts,{})};if(new Date(staged.expires_at)<new Date())throw new HttpError(400,'Preview expired. Upload and validate the CSV again.');
     await trx('business_settings').where({id:'agency'}).forUpdate().first();const rows=json<ImportRow[]>(staged.rows,[]);const counts={imported:0,duplicate:0,invalid:0,excluded:0,total:rows.length};
@@ -54,8 +55,9 @@ importRouter.post('/confirm',permit('contacts:write'),async(req,res)=>{
       const {notes,...input}=row.data;const c=contactSchema.parse(input);if(await trx('suppressions').where({email:c.email}).first()){status='excluded';error='Suppressed since preview.';}
       else if(await trx('contacts').where({email:c.email}).first()){status='duplicate';error='Email already exists.';}
       else {try {await validateContactReferences(c,trx);}catch(err){status='invalid';error=err instanceof HttpError?err.message:'Invalid fields.';}
-        if(status==='valid'){const saved=await insertContact(c,req.user!.id,trx);if(notes)await trx('notes').insert({id:id(),contact_id:saved.id,user_id:req.user!.id,body:notes,created_at:new Date()});status='imported';}}
+        if(status==='valid'){const saved=await insertContact(c,req.user!.id,trx);if(notes)await trx('notes').insert({id:id(),contact_id:saved.id,user_id:req.user!.id,body:notes,created_at:new Date()});if(staged.segment_id)await addSegmentContacts(staged.segment_id,[saved.id],trx);status='imported';}}
     }else if(status==='valid')status='invalid';
+      if(status==='duplicate'&&staged.segment_id&&row.data.email){const existing=await trx('contacts').where({email:normalizeEmail(row.data.email)}).first();if(existing)await addSegmentContacts(staged.segment_id,[existing.id],trx);}
       if(status in counts)(counts as any)[status]++;await trx('import_results').insert({id:id(),import_id:staged.id,row_number:row.row,status,email:row.data.email||null,error:error||null});
     }
     await trx('imports').where({id:staged.id}).update({confirmed_at:new Date(),counts:JSON.stringify(counts)});await audit(req.user!.id,'csv_import_confirmed','import',staged.id,counts,trx);return{id:staged.id,...counts};

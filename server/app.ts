@@ -4,6 +4,7 @@ import { config,validateConfig } from './config.js';
 import { authRouter,userRouter,loadSession,csrfProtect } from './auth.js';
 import { settingsRouter,accountRouter } from './settings.js';
 import { contactRouter,stageRouter,taskRouter,suppressionRouter } from './contacts.js';
+import { segmentRouter } from './segments.js';
 import { importRouter } from './imports.js';
 import { reportingRouter } from './reporting.js';
 import { campaignRouter,templateRouter,inboxRouter } from './campaigns.js';
@@ -20,7 +21,7 @@ import { HttpResponse,requestContext,parseBody,runHandlers,errorResponse,nodeHan
 
 const routes=[
   ['/api/auth',authRouter],['/api/users',userRouter],['/api/settings',settingsRouter],
-  ['/api/accounts',accountRouter],['/api/contacts',contactRouter],['/api/stages',stageRouter],
+  ['/api/segments',segmentRouter],['/api/accounts',accountRouter],['/api/contacts',contactRouter],['/api/stages',stageRouter],
   ['/api/tasks',taskRouter],['/api/suppressions',suppressionRouter],['/api/imports',importRouter],
   ['/api/campaigns',campaignRouter],['/api/templates',templateRouter],['/api/inbox',mailToolsRouter],['/api/inbox',inboxRouter],['/api',reportingRouter],
 ] as const;

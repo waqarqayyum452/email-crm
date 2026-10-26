@@ -1,3 +1,4 @@
+import { ensureProspectDeletion } from './prospect-deletion.js';
 import { Router } from './http.js';
 import { z } from 'zod';
 import { db, json } from './db.js';
@@ -14,7 +15,7 @@ const count=async(q:any,column='*')=>Number((await q.count({n:column}).first())?
 function window(q:any,column:string,f:Filters) {if(f.from)q.where(column,'>=',new Date(f.from+'T00:00:00Z'));if(f.to){const end=new Date(f.to+'T00:00:00Z');end.setUTCDate(end.getUTCDate()+1);q.where(column,'<',end);}return q;}
 function filters(q:any,table:string,f:Filters) {if(f.campaign_id)q.where(table+'.campaign_id',f.campaign_id);if(f.account_id)q.where(table+'.account_id',f.account_id);return q;}
 export async function metricsFor(f:Filters={}) {
-  const settings=await getSettings();
+  await ensureProspectDeletion();const settings=await getSettings();
   const acceptedQ=()=>window(filters(db('send_attempts').where({'send_attempts.status':'accepted','send_attempts.is_test':false}),'send_attempts',f),'send_attempts.accepted_at',f);
   const messagesQ=(classification:string)=>window(filters(db('messages').where({classification,is_test:false,direction:'inbound'}),'messages',f),'received_at',f);
   const eventQ=(kind:string)=>{const q=db('tracking_events as e').join('messages as m','m.id','e.message_id').where({'e.kind':kind,'m.is_test':false});if(settings.filter_bots&&['open','click'].includes(kind))q.where('e.bot',false);if(f.campaign_id)q.where('e.campaign_id',f.campaign_id);if(f.account_id)q.where('m.account_id',f.account_id);return window(q,'e.created_at',f);};
@@ -22,7 +23,7 @@ export async function metricsFor(f:Filters={}) {
   const [accepted,unique_opens,unique_clicks,human_replies,automatic_replies,bounces,unsubscribes,failed_attempts,qualified,won,active_campaigns,series]=await Promise.all([
     count(acceptedQ()),unique('open'),unique('click'),count(messagesQ('human_reply')),count(messagesQ('automatic')),count(eventQ('bounce')),unique('unsubscribe'),
     count(window(filters(db('send_attempt_events as ae').join('send_attempts as sa','sa.id','ae.attempt_id').whereIn('ae.status',['temporary','permanent','auth','limit']).where('sa.is_test',false),'sa',f),'ae.created_at',f)),
-    count(db('contacts as c').join('pipeline_stages as s','s.id','c.stage_id').where('s.kind','qualified'),'c.id'),
+    count(db('contacts as c').whereNull('c.deleted_at').join('pipeline_stages as s','s.id','c.stage_id').where('s.kind','qualified'),'c.id'),
     count(db('contacts as c').join('pipeline_stages as s','s.id','c.stage_id').where('s.kind','won'),'c.id'),
     count(db('campaigns').whereIn('status',['active','scheduled']).modify(q=>{if(f.account_id)q.where('account_id',f.account_id);if(f.campaign_id)q.where('id',f.campaign_id);})),
     acceptedQ().select(db.raw('DATE(accepted_at) as date')).count({accepted:'*'}).groupByRaw('DATE(accepted_at)').orderBy('date'),

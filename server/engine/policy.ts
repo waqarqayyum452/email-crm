@@ -48,7 +48,7 @@ export async function suppressEmail(email: string, reason: string, source: strin
 }
 
 export async function contactEligibility(contact: any, account: any, trx: Database = db, options: {reply?:boolean} = {}): Promise<string | null> {
-  if (!contact) return 'Contact no longer exists';
+  if (!contact||contact.deleted_at) return 'Contact no longer exists';
   if (await trx('suppressions').where({email:contact.email}).first()) return 'Address is suppressed agency-wide';
   if (!['opted_in','test'].includes(contact.consent_status)) return 'Documented opt-in or controlled-test consent is required';
   if (contact.consent_status === 'opted_in' && !contact.consent_evidence?.trim()) return 'Opt-in evidence is required';

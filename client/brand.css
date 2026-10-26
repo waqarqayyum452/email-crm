@@ -93,3 +93,20 @@ input:focus, select:focus, textarea:focus { border-color: #3863ff; box-shadow: 0
 .app-footer { background: #ffffff80; }
 @media(max-width: 1100px) { .sidebar .brand-wordmark { width: 170px; } }
 @media(max-width: 760px) { .login-brand .brand-wordmark { width: 175px; } .login-brand { gap: 8px; } .login-copy { margin-top: 28px; } }
+
+/* Saved prospect segments */
+.prospect-segments { margin-bottom:16px; padding:18px; }
+.segment-choices { display:flex; flex-wrap:wrap; gap:8px; }
+.segment-choices button { max-width:100%; overflow-wrap:anywhere; display:flex; flex-wrap:wrap; align-items:center; gap:8px; border:1px solid var(--border,#dce4e2); border-radius:8px; background:transparent; color:inherit; padding:10px 14px; text-align:left; cursor:pointer; }
+.segment-choices button.active { background:#edf3ff; border-color:var(--brand); color:#2352ff; }
+.segment-choices button span { font-weight:700; }
+.segment-choices button small { font-size:11px; opacity:.75; }
+.segment-audience { display:flex; align-items:end; gap:12px; margin-top:16px; }
+.segment-audience .field { flex:1; }
+@media(max-width:640px){.segment-audience{align-items:stretch;flex-direction:column;}.bulk-toolbar{flex-wrap:wrap;}}
+
+.prospect-segments .section-label { margin:0 0 12px; padding:0; }
+.prospect-segments .panel-note { margin:12px 0 0; padding:0; }
+
+.prospect-row-actions { display:flex; align-items:center; gap:4px; }
+.prospect-row-actions .danger-text { color:#a33f3f; }

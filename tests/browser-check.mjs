@@ -237,6 +237,30 @@ try {
     await expect(page.getByText(contactEmail, { exact: true })).toBeVisible();
     await page.screenshot({ path: path.join(artifacts, 'crm-prospects.png'), fullPage: true });
   });
+  let segmentId;
+  await check('Saved segments group selected prospects, manual additions and CSV imports',async()=>{
+    await page.getByRole('button',{name:'New segment',exact:true}).click();
+    let dialog=page.getByRole('dialog',{name:'New segment'});await dialog.getByLabel('Segment name').fill('Browser QA segment');
+    const created=await mutate(page,'POST','/segments',()=>dialog.getByRole('button',{name:'Create segment',exact:true}).click());segmentId=created.id;
+    await expect(page.locator('.segment-choices button.active')).toContainText('Browser QA segment');
+    await page.getByRole('button',{name:'All prospects',exact:true}).click();
+    await page.getByLabel('Search prospects').fill(contactEmail);await page.getByRole('checkbox',{name:'Select Jamie Rivera',exact:true}).check();
+    await page.getByLabel('Destination segment').selectOption(segmentId);
+    await mutate(page,'POST','/segments/'+segmentId+'/members',()=>page.getByRole('button',{name:'Add to segment',exact:true}).click());
+    await page.locator('.segment-choices button').filter({hasText:'Browser QA segment'}).click();await page.getByLabel('Search prospects').fill('');
+    await expect(page.getByText(contactEmail,{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Add prospect',exact:true}).click();dialog=page.getByRole('dialog',{name:'Add a prospect'});
+    await dialog.getByLabel('Email address',{exact:true}).fill('segment-manual-'+runId+'@example.test');await dialog.getByLabel('Contact source',{exact:true}).fill('Browser QA');
+    await mutate(page,'POST','/contacts',()=>dialog.getByRole('button',{name:'Add contact',exact:true}).click());
+    await expect(page.getByText('segment-manual-'+runId+'@example.test',{exact:true}).first()).toBeVisible();
+    await page.getByRole('button',{name:'Import CSV',exact:true}).click();dialog=page.getByRole('dialog',{name:'Import your contacts'});
+    await dialog.locator('input[type=file]').setInputFiles({name:'segment.csv',mimeType:'text/csv',buffer:Buffer.from('email,source\nsegment-import-'+runId+'@example.test,QA CSV')});
+    await expect(dialog.getByRole('button',{name:'Confirm import',exact:true})).toBeEnabled();
+    await mutate(page,'POST','/imports/confirm',()=>dialog.getByRole('button',{name:'Confirm import',exact:true}).click());await dialog.getByRole('button',{name:'Back to prospects'}).click();
+    await expect(page.getByText('segment-import-'+runId+'@example.test',{exact:true}).first()).toBeVisible();
+    await page.screenshot({path:path.join(artifacts,'crm-prospect-segments.png'),fullPage:true});
+    await page.setViewportSize({width:390,height:844});await delay(400);await page.screenshot({path:path.join(artifacts,'crm-prospect-segments-mobile.png'),fullPage:true,animations:'disabled'});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);await page.setViewportSize({width:1440,height:1000});
+  });
   await check('Contact edit, notes, tasks, and stage changes persist', async () => {
     await page.goto(`http://127.0.0.1:3100/prospects/${contactId}`);
     await page.getByRole('button', { name: 'Edit contact', exact: true }).click();
@@ -295,6 +319,10 @@ try {
     await dialog.getByLabel('Subject', { exact: true }).fill('Hello {{first_name|there}}');
     await dialog.getByLabel('Plain-text message', { exact: true }).fill('Hello {{first_name|there}}, checking in with {{company_name}}.');
     await dialog.getByRole('button', { name: '2. Choose audience (0)', exact: true }).click();
+    await dialog.getByLabel('Add a segment to this audience').selectOption(segmentId);await dialog.getByRole('button',{name:'Add entire segment',exact:true}).click();
+    await expect(dialog.getByText('3 contacts selected',{exact:true})).toBeVisible();
+    await dialog.getByRole('textbox', { name: 'Search campaign audience' }).fill('segment-');
+    const extra=dialog.locator('.audience-list input[type=checkbox]');await expect(extra).toHaveCount(2);for(const input of await extra.all())await input.uncheck();
     await dialog.getByRole('textbox', { name: 'Search campaign audience' }).fill(contactEmail);
     const audience = dialog.locator('.audience-list label').filter({ hasText: contactEmail });
     await audience.getByRole('checkbox').check();
@@ -721,6 +749,14 @@ try {
     await page.getByRole('button').filter({hasText:'Signature draft '+runId}).click();dialog=page.getByRole('dialog',{name:'New message',exact:true});await expect(dialog.locator('.compose-signature')).toHaveText('Second mailbox signature');await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
     await page.getByRole('button',{name:/^Inbox/}).click();await expect(page).toHaveURL(new RegExp('account_id='+secondId));await page.getByLabel('Inbox mailbox',{exact:true}).selectOption(composeMailboxId);await page.locator('.conversation-list a').first().click();await expect(page).toHaveURL(new RegExp('account_id='+composeMailboxId));await expect(page.getByLabel('Inbox mailbox',{exact:true})).toHaveValue(composeMailboxId);
     await page.getByRole('textbox',{name:'Reply message',exact:true}).fill('Expanded reply signature');await page.getByRole('button',{name:'Expand reply with formatting and attachments',exact:true}).click();dialog=page.getByRole('dialog',{name:'Reply to email',exact:true});await expect(dialog.locator('.compose-signature')).toContainText('First mailbox signature');await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+  });
+  await check('Prospect delete actions confirm, cancel and remove the record from list and detail views',async()=>{
+    await page.goto('http://127.0.0.1:3100/prospects',{waitUntil:'networkidle'});
+    await page.getByRole('button',{name:'Add prospect',exact:true}).click();let dialog=page.getByRole('dialog',{name:'Add a prospect'});await dialog.getByLabel('First name').fill('Delete Browser QA');await dialog.getByLabel('Email address',{exact:true}).fill('delete-'+runId+'@example.test');await dialog.getByLabel('Contact source',{exact:true}).fill('Isolated QA');
+    const created=await mutate(page,'POST','/contacts',()=>dialog.getByRole('button',{name:'Add contact',exact:true}).click());
+    await page.getByRole('button',{name:'Delete Delete Browser QA',exact:true}).click();dialog=page.getByRole('dialog',{name:'Delete prospect?',exact:true});await expect(dialog).toContainText('delete-'+runId+'@example.test');await dialog.getByRole('button',{name:'Cancel',exact:true}).click();await expect(page.getByText('delete-'+runId+'@example.test',{exact:true})).toBeVisible();
+    await page.goto('http://127.0.0.1:3100/prospects/'+created.id,{waitUntil:'networkidle'});await page.getByRole('button',{name:'Delete prospect',exact:true}).click();dialog=page.getByRole('dialog',{name:'Delete prospect?',exact:true});await page.screenshot({path:path.join(artifacts,'crm-delete-prospect.png'),fullPage:true});
+    await mutate(page,'DELETE','/contacts/'+created.id,()=>dialog.getByRole('button',{name:'Delete prospect',exact:true}).click());await expect(page).toHaveURL('http://127.0.0.1:3100/prospects');await page.getByLabel('Search prospects').fill('delete-'+runId+'@example.test');await expect(page.getByRole('heading',{name:'No prospects match these filters',exact:true})).toBeVisible();expect((await db('contacts').where({id:created.id}).first()).deleted_at).toBeTruthy();
   });
   await check('Every dashboard page renders without runtime or API failures', async () => {
     for (const route of ['overview', 'prospects', 'campaigns', 'templates', 'inbox', 'pipeline', 'analytics', 'suppressions', 'settings/accounts', 'settings/sending', 'settings/tracking', 'settings/crm', 'settings/team', 'health']) {

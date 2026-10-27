@@ -27,7 +27,7 @@ const artifacts = path.join(projectRoot, 'artifacts');
 const runId = randomBytes(5).toString('hex');
 const ownerEmail = `owner-${runId}@example.test`, contactEmail = `jamie-${runId}@example.test`;
 const password = randomBytes(26).toString('base64url');
-let server, browser, db, page;
+let server, browser, db, page, workspaceNavigationWidth;
 const failures = [];
 const checks = [];
 const apiTrail = [];
@@ -198,7 +198,7 @@ try {
     const sessionCookie = (await page.context().cookies()).find(cookie => cookie.name === 'sdwe_session');
     expect(sessionCookie, 'Production login creates a session cookie').toBeTruthy();
     expect(sessionCookie.secure).toBe(true); expect(sessionCookie.httpOnly).toBe(true); expect(sessionCookie.sameSite).toBe('Strict');
-    await expect(page.getByRole('heading', { name: 'Good to see you, Browser.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Good to see you, Browser.' })).toBeVisible();workspaceNavigationWidth=await page.locator('.sidebar').evaluate(node=>node.getBoundingClientRect().width);
     await expect(page.locator('.sidebar .brand-wordmark')).toBeVisible();
     expect(await page.locator('.sidebar').evaluate(node=>getComputedStyle(node).backgroundColor)).toBe('rgb(222, 240, 253)');
     await expect(page.getByText('Automation paused', { exact: true })).toBeVisible();
@@ -580,6 +580,7 @@ try {
       const list = rect('.conversation-list'), row = rect('.conversation-list .conversation-item');
       return { list_height: list.height, row_height: row.height, reader_height: rect('.thread-messages').height, heading_height: rect('.conversation-heading').height, composer_height: rect('.reply-composer').height };
     });
+    expect(await page.locator('.sidebar').evaluate(node=>node.getBoundingClientRect().width)).toBe(workspaceNavigationWidth);expect(await page.locator('.main-shell').evaluate(node=>parseFloat(getComputedStyle(node).marginLeft))).toBe(workspaceNavigationWidth);await page.getByLabel('Search conversations',{exact:true}).fill('no-matching-subject-'+runId);await expect(page.getByRole('heading',{name:'No conversations match your search',exact:true})).toBeVisible();await page.getByRole('button',{name:'Clear conversation search',exact:true}).click();await expect(page.getByLabel('Search conversations',{exact:true})).toHaveValue('');await expect(listPane.locator('.conversation-item').first()).toBeVisible();
     expect(compactLayout.list_height, 'Laptop email list has space for at least five rows').toBeGreaterThanOrEqual(480);
     expect(compactLayout.row_height, 'Email list rows stay compact').toBeLessThanOrEqual(92);
     expect(compactLayout.reader_height, 'The email body gets most of the laptop reading pane').toBeGreaterThanOrEqual(400);
@@ -769,7 +770,7 @@ try {
     await page.getByRole('button',{name:/^Drafts/}).click();await expect(page).toHaveURL(new RegExp('account_id='+composeMailboxId));await expect(page.getByRole('heading',{name:'No saved drafts',exact:true})).toBeVisible();
     await page.getByLabel('Inbox mailbox',{exact:true}).selectOption(secondId);await expect(page.getByRole('button').filter({hasText:'Signature draft '+runId})).toBeVisible();await page.reload({waitUntil:'networkidle'});await expect(page.getByLabel('Inbox mailbox',{exact:true})).toHaveValue(secondId);
     await page.getByRole('button').filter({hasText:'Signature draft '+runId}).click();dialog=page.getByRole('dialog',{name:'New message',exact:true});await expect(dialog.locator('.compose-signature')).toHaveText('Second mailbox signature');await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
-    await page.getByRole('button',{name:/^Inbox/}).click();await expect(page).toHaveURL(new RegExp('account_id='+secondId));await page.getByLabel('Inbox mailbox',{exact:true}).selectOption(composeMailboxId);await page.locator('.conversation-list a').first().click();await expect(page).toHaveURL(new RegExp('account_id='+composeMailboxId));await expect(page.getByLabel('Inbox mailbox',{exact:true})).toHaveValue(composeMailboxId);
+    await page.getByRole('button',{name:/^Inbox/}).click();await expect(page).toHaveURL(new RegExp('folder=inbox&account_id='+secondId));await page.getByLabel('Inbox mailbox',{exact:true}).selectOption(composeMailboxId);await page.locator('.conversation-list a').first().click();await expect(page).toHaveURL(new RegExp('account_id='+composeMailboxId));await expect(page.getByLabel('Inbox mailbox',{exact:true})).toHaveValue(composeMailboxId);
     await page.getByRole('textbox',{name:'Reply message',exact:true}).fill('Expanded reply signature');await page.getByRole('button',{name:'Expand reply with formatting and attachments',exact:true}).click();dialog=page.getByRole('dialog',{name:'Reply to email',exact:true});await expect(dialog.locator('.compose-signature')).toContainText('First mailbox signature');await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
   });
   await check('Prospect delete actions confirm, cancel and remove the record from list and detail views',async()=>{

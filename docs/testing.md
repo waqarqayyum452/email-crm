@@ -1,5 +1,9 @@
 # Testing and acceptance
 
+## Inbox navigation and readability (2026-10-27)
+
+Production build/typechecks and all 28 local browser acceptance checks pass. The Inbox main navigation now uses the shared 260px sidebar width, with the same padding and content as other dashboard pages. Browser checks compare Inbox sidebar width/main offset with Overview, verify clear-search behavior and empty results, preserve at least five compact rows and a 400px reading area at 1366x768, and verify independent pane scrolling and mobile navigation. Laptop/mobile screenshots were reviewed. Search includes sender/recipient display names; short list dates retain the full timestamp in a tooltip. The mailbox-filtering fixture now waits for the Inbox folder URL before changing accounts, avoiding its earlier draft-folder navigation race. Live sending remained disabled.
+
 ## Open tracking accuracy (2026-10-27)
 
 The isolated suite passes 197 tests across 19 files; TypeScript and the production build pass. Real HTTP fixture checks verify that repeated pixel GETs create separate events, HEAD requests never create engagement, explicit scanner/prefetch loads remain in raw counts and are excluded by the configured filter, toggling the filter changes the aggregate honestly, and pixels for disabled tracking never record events. The browser fixture checks actual Next response headers and the popup's raw/filtered counts, first/last timestamps, and caching/reading-duration explanation. No real SMTP or Gmail/Outlook account is used. Email-client caching and privacy preloading cannot be corrected into an exact count of human reads; historical events lack enough provenance to relabel reliably.

@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowDown, CheckCircle2, ChevronDown, Mail, MessageCircle, PenSquare, RefreshCw, Search, Send, ShieldCheck, Reply, Forward, Paperclip, Eye, FileText, Maximize2, ShieldAlert, Inbox as InboxIcon } from 'lucide-react';
+import { ArrowLeft, ArrowDown, CheckCircle2, ChevronDown, Mail, MessageCircle, PenSquare, RefreshCw, Search, Send, ShieldCheck, Reply, Forward, Paperclip, Eye, FileText, Maximize2, ShieldAlert, X, Inbox as InboxIcon } from 'lucide-react';
 import { api, body, date, initials, list, patch, useResource, type Row } from '../api';
 import { useWorkspace } from '../context';
 import { Badge, Button, Empty, Field, FormError, HtmlPreview, Modal, PageHeader, Panel, Resource, Status } from '../ui';
@@ -16,6 +16,13 @@ const personName = (message: Row) => (message.direction === 'outbound' ? message
 const messageStatus = (message: Row) => message.classification && !['unmatched', 'outbound'].includes(message.classification) ? message.classification : message.direction === 'outbound' ? 'outgoing' : 'incoming';
 const liveInbox = { pollIntervalMs: 10000, refreshOnFocus: true, keepPreviousData: true };
 const liveMailboxes = { pollIntervalMs: 30000, refreshOnFocus: true, keepPreviousData: true };
+function listDate(value:string) {
+  const timestamp=new Date(value),now=new Date();
+  if(Number.isNaN(timestamp.getTime()))return '';
+  return timestamp.toLocaleDateString()===now.toLocaleDateString()
+    ? timestamp.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})
+    : timestamp.toLocaleDateString(undefined,{month:'short',day:'numeric',...(timestamp.getFullYear()!==now.getFullYear()?{year:'numeric'}:{})});
+}
 const sendingStates: Record<string, { label: string; tone: string }> = {
   accepted: { label: 'Sent to mail server', tone: 'green' },
   sending: { label: 'Sending', tone: 'blue' }, submitting: { label: 'Sending', tone: 'blue' }, leased: { label: 'Processing', tone: 'blue' },
@@ -62,7 +69,7 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
   const drafts = useResource('/inbox/drafts', revision, liveInbox);
   const mailboxResource = useResource('/accounts', revision, liveMailboxes);
   const currentAccounts = mailboxResource.data ? list(mailboxResource.data) : accounts;
-  const rows = list(resource.data).filter(m => `${m.from_email} ${m.subject} ${m.latest_subject || ''} ${m.to_email}`.toLowerCase().includes(search.toLowerCase()));
+  const rows = list(resource.data).filter(m => `${m.from_name || ''} ${m.to_name || ''} ${m.from_email} ${m.subject} ${m.latest_subject || ''} ${m.to_email}`.toLowerCase().includes(search.trim().toLowerCase()));
   const visibleDrafts = list(drafts.data).filter(draft=>!account||draft.account_id===account);
   const mailboxQuery=account?'&account_id='+encodeURIComponent(account):'';
   const pending = list(outbox.data).filter(job => (!account || job.account_id === account) && `${job.recipient} ${job.subject}`.toLowerCase().includes(search.toLowerCase()));
@@ -83,7 +90,7 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
     {(resource.refreshError || outbox.error || outbox.refreshError || mailboxResource.error || mailboxResource.refreshError) && <p className="panel-note" role="status">Live updates are temporarily unavailable. Retrying automatically; your messages and drafts are kept.</p>}
     <Panel className="inbox-panel">
       <div className="inbox-toolbar">
-        <div className="search-field"><Search size={17} /><input aria-label="Search conversations" placeholder="Search conversations…" value={search} onChange={e => setSearch(e.target.value)} /></div>
+        <div className="search-field"><Search size={17} /><input aria-label="Search conversations" placeholder="Search conversations…" value={search} onChange={e => setSearch(e.target.value)} />{search && <button type="button" className="icon-button inbox-clear-search" aria-label="Clear conversation search" onClick={()=>setSearch('')}><X size={16}/></button>}</div>
         <div className="filters">
           <select aria-label="Conversation classification" value={classification} onChange={e => setClassification(e.target.value)}><option value="">All conversations</option><option value="outbound">Outgoing</option><option value="human_reply">Human replies</option><option value="automatic">Automatic replies</option><option value="delivery_failure">Delivery failures</option><option value="unmatched">New messages</option><option value="uncertain">Needs review</option></select>
           <label className="inbox-mailbox-filter"><span>Mailbox</span><select aria-label="Inbox mailbox" value={account} onChange={e => router.push('/inbox?folder='+folder+(e.target.value?'&account_id='+encodeURIComponent(e.target.value):''),{scroll:false})}><option value="">All mailboxes</option>{currentAccounts.map(a => <option value={a.id} key={a.id}>{a.label} · {a.email}</option>)}</select></label>
@@ -97,10 +104,10 @@ export function InboxPage({ messageId = '' }: { messageId?: string }) {
           <div className="conversation-list" role="region" aria-label="Conversation list" tabIndex={0}>{showDrafts?<Resource {...drafts} retry={drafts.reload}>{visibleDrafts.length?visibleDrafts.map(item=><button type="button" key={item.id} className="conversation-item mail-draft-item" onClick={async()=>{try{setDraft(await api<Row>(`/inbox/drafts/${item.id}`));setComposing(true);}catch(error:any){notify(error.message,true);}}}><strong>{item.to || 'No recipient'}</strong><h3>{item.subject}</h3><p>Draft · {date(item.updated_at,true)}</p></button>):<Empty title="No saved drafts" description="Save a draft from the email composer and return to it here."/>}</Resource>:<Resource {...resource} retry={resource.reload}>{rows.length ? rows.map(m => {
             const active = selected === m.id || m.message_ids?.includes(selected);
             return <Link className={`conversation-item ${active ? 'active' : ''} ${m.unread_count ? 'is-unread' : 'is-read'}`} key={m.thread_id || m.id} href={`/inbox/${m.id}?folder=${folder}${mailboxQuery}`} scroll={false} aria-current={active ? 'page' : undefined}>
-              <div className="conversation-top"><span className="avatar contact-avatar">{initials(personName(m) || 'Mail')}</span><strong title={participant(m)}>{personName(m) || 'Message'}</strong><time>{date(m.accepted_at || m.received_at || m.created_at, true)}</time></div>
-              <div className="conversation-subject">{m.unread_count > 0 && <span className="unread-indicator" aria-label="Unread message" title="Unread" />}<h3>{m.subject || '(No subject)'}</h3>{m.message_count > 1 && <span className="conversation-count" aria-label={`${m.message_count} messages in conversation`}>{m.message_count}</span>}</div><div className="conversation-preview"><p>{m.preview || 'Open to read this conversation.'}</p>{(m.send_status || !['unmatched', 'outbound'].includes(m.classification)) && <MessageStatus message={m} interactive={false} />}</div>
+              <div className="conversation-top"><span className="avatar contact-avatar">{initials(personName(m) || 'Mail')}</span><strong title={participant(m)}>{personName(m) || 'Message'}</strong><time title={date(m.accepted_at || m.received_at || m.created_at, true)} dateTime={m.accepted_at || m.received_at || m.created_at}>{listDate(m.accepted_at || m.received_at || m.created_at)}</time></div>
+              <div className="conversation-subject">{m.unread_count > 0 && <span className="unread-indicator" aria-label="Unread message" title="Unread" />}<h3 title={m.subject || '(No subject)'}>{m.subject || '(No subject)'}</h3>{m.message_count > 1 && <span className="conversation-count" aria-label={`${m.message_count} messages in conversation`}>{m.message_count}</span>}</div><div className="conversation-preview"><p>{m.preview || 'Open to read this conversation.'}</p>{(m.send_status || !['unmatched', 'outbound'].includes(m.classification)) && <MessageStatus message={m} interactive={false} />}</div>
             </Link>;
-          }) : <Empty title={folder === 'sent' ? 'No sent emails yet' : folder === 'spam' ? 'No spam conversations' : 'A little quiet, for now.'} description={folder === 'sent' ? 'Emails accepted by the mail server appear here. Queued emails stay in Outbox.' : folder === 'spam' ? 'Move unwanted conversations to Spam from the conversation header. This view is managed inside the CRM.' : 'Synced incoming messages and their conversations will appear here.'} />}</Resource>}</div>
+          }) : <Empty title={search.trim() ? 'No conversations match your search' : folder === 'sent' ? 'No sent emails yet' : folder === 'spam' ? 'No spam conversations' : 'A little quiet, for now.'} description={search.trim() ? 'Try another name, email address or subject, or clear your search.' : folder === 'sent' ? 'Emails accepted by the mail server appear here. Queued emails stay in Outbox.' : folder === 'spam' ? 'Move unwanted conversations to Spam from the conversation header. This view is managed inside the CRM.' : 'Synced incoming messages and their conversations will appear here.'} />}</Resource>}</div>
         </aside>
         <section className="conversation-detail">{selected ? <Conversation key={selected} id={selected} accounts={currentAccounts} onRead={resource.reload} folder={folder} mailboxQuery={mailboxQuery} /> : <div className="inbox-welcome">
           <div className="inbox-welcome-art"><MessageCircle size={36} /><Mail size={23} /></div><h2>Good conversations live here.</h2><p>Select a message to read and reply, or choose New message to start a conversation.</p><div><ShieldCheck size={16} />Human replies stop automated follow-ups.</div>

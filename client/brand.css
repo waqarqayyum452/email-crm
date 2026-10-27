@@ -121,3 +121,30 @@ input:focus, select:focus, textarea:focus { border-color: #3863ff; box-shadow: 0
 .design-rich-content:empty::before { content:attr(data-placeholder); color:#8793a6; pointer-events:none; }
 
 .design-rich-content { line-height:1.5; }
+
+/* Inbox: shared workspace navigation, calmer message rows and stable scrolling. */
+.inbox-workspace .inbox-toolbar .search-field { flex:1; min-width:180px; }
+.inbox-clear-search { flex-shrink:0; width:28px; height:28px; border-radius:6px; }
+.inbox-workspace .inbox-layout { grid-template-columns:clamp(300px,31%,360px) minmax(0,1fr); }
+.inbox-workspace .inbox-sidebar { background:#fff; }
+.inbox-workspace .inbox-folder-tabs { padding:7px 8px; gap:4px; background:#fff; }
+.inbox-workspace .inbox-folder-tabs > button { min-height:28px; padding:4px 2px; border:1px solid transparent; font-weight:550; }
+.inbox-workspace .inbox-folder-tabs > button.selected { border-color:#d4e0ff; background:#edf3ff; color:#244ac4; }
+.inbox-workspace .inbox-outbox { background:#f7f9fd; }
+.inbox-workspace .inbox-outbox > summary strong { font-size:13px; }
+.inbox-workspace .conversation-list, .inbox-workspace .thread-messages { scrollbar-gutter:stable; }
+.inbox-workspace .conversation-list .conversation-item { padding-top:11px; padding-bottom:11px; }
+.inbox-workspace .conversation-top > strong { font-size:14px; line-height:1.35; }
+.inbox-workspace .conversation-top > time { font-size:11px; color:#68768c; font-variant-numeric:tabular-nums; }
+.inbox-workspace .conversation-item h3 { font-size:14px; }
+.inbox-workspace .conversation-item p { color:#647189; }
+.inbox-workspace .conversation-item.active { background:#e9f0ff; }
+.inbox-workspace .conversation-item:focus-visible { outline-offset:-3px; }
+.inbox-workspace .thread-message-heading strong { font-size:14px; }
+@media(max-width:1100px) and (min-width:761px) {
+  .inbox-workspace .inbox-layout { grid-template-columns:290px minmax(0,1fr); }
+}
+@media(max-width:760px) {
+  .inbox-workspace .inbox-layout { grid-template-columns:minmax(0,1fr); }
+  .inbox-workspace .inbox-toolbar .search-field { min-width:0; width:100%; }
+}

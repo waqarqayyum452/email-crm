@@ -723,7 +723,7 @@ input[type=checkbox] { width: 17px; height: 17px; }
 .collapsed-message-preview { display: block; width: 100%; border: 0; background: transparent; text-align: left; padding: 0 0 10px 32px; color: #617085; font: inherit; font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
 button.mail-open-status { border: 0; background: none; padding: 3px 2px; font-family: inherit; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 button.mail-open-status:hover { color: #244cbd; }
-.modal:has(.open-tracking-summary) { max-width: 430px; }
+.modal:has(.open-tracking-summary) { width: 560px; max-width: 100%; }
 .open-tracking-summary dl { margin: 16px 0; }
 .open-tracking-summary dl > div { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid #e4eaee; }
 .open-tracking-summary dt { color: #617085; font-size: 13px; }

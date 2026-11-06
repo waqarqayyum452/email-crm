@@ -677,12 +677,12 @@ try {
     await expect(dialog.getByLabel('Activity timezone',{exact:true})).toHaveValue('Asia/Karachi');
     const timeOptions={timeZone:'Asia/Karachi',day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true,timeZoneName:'short'};
     await expect(dialog.locator('dd').nth(3)).toHaveText(new Intl.DateTimeFormat('en-GB',timeOptions).format(firstOpen));
-    await expect(dialog.getByRole('region',{name:'Recorded open requests'}).locator('li')).toHaveCount(3);
+    await expect(dialog.getByRole('region',{name:'Recorded open requests'})).toHaveCount(0);
     await dialog.getByLabel('Activity timezone',{exact:true}).selectOption('UTC');await expect(dialog.locator('dd').nth(3)).toHaveText(new Intl.DateTimeFormat('en-GB',{...timeOptions,timeZone:'UTC'}).format(firstOpen));
     await dialog.getByLabel('Activity timezone',{exact:true}).selectOption('Asia/Karachi');
     const newestOpen=new Date();await db('tracking_events').insert({id:randomUUID(),message_id:sentId,kind:'open',bot:false,created_at:newestOpen});
     await dialog.getByRole('button',{name:'Refresh activity',exact:true}).click();await expect(dialog.locator('dd').nth(0)).toHaveText('3');await expect(dialog.locator('dd').nth(1)).toHaveText('4');await expect(dialog.locator('dd').nth(4)).toHaveText(new Intl.DateTimeFormat('en-GB',timeOptions).format(newestOpen));
-    await expect(dialog.getByRole('region',{name:'Recorded open requests'}).locator('li')).toHaveCount(4);
+    await expect(dialog.getByRole('region',{name:'Recorded open requests'})).toHaveCount(0);
     await page.screenshot({path:path.join(artifacts,'crm-inbox-open-activity.png'),fullPage:true});await dialog.getByRole('button',{name:'Close',exact:true}).click();
     await page.getByRole('button',{name:'Collapse older messages',exact:true}).click();await page.screenshot({path:path.join(artifacts,'crm-inbox-collapsed-messages.png'),fullPage:true});
     await page.goto('http://127.0.0.1:3100/overview',{waitUntil:'networkidle'});

@@ -674,6 +674,15 @@ try {
     await page.getByRole('button',{name:'Open recorded',exact:true}).first().click();
     const dialog=page.getByRole('dialog',{name:'Email open activity',exact:true});await expect(dialog.locator('dd').nth(0)).toHaveText('2');
     await expect(dialog.locator('dd').nth(1)).toHaveText('3');await expect(dialog.locator('dd').nth(2)).toHaveText('1');await expect(dialog.locator('dd').nth(3)).not.toHaveText('Not recorded');await expect(dialog.locator('dd').nth(4)).not.toHaveText('Not recorded');await expect(dialog.locator('dd').nth(5)).toHaveText('Unavailable');await expect(dialog).toContainText('Gmail may serve cached images');
+    await expect(dialog.getByLabel('Activity timezone',{exact:true})).toHaveValue('Asia/Karachi');
+    const timeOptions={timeZone:'Asia/Karachi',day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true,timeZoneName:'short'};
+    await expect(dialog.locator('dd').nth(3)).toHaveText(new Intl.DateTimeFormat('en-GB',timeOptions).format(firstOpen));
+    await expect(dialog.getByRole('region',{name:'Recorded open requests'}).locator('li')).toHaveCount(3);
+    await dialog.getByLabel('Activity timezone',{exact:true}).selectOption('UTC');await expect(dialog.locator('dd').nth(3)).toHaveText(new Intl.DateTimeFormat('en-GB',{...timeOptions,timeZone:'UTC'}).format(firstOpen));
+    await dialog.getByLabel('Activity timezone',{exact:true}).selectOption('Asia/Karachi');
+    const newestOpen=new Date();await db('tracking_events').insert({id:randomUUID(),message_id:sentId,kind:'open',bot:false,created_at:newestOpen});
+    await dialog.getByRole('button',{name:'Refresh activity',exact:true}).click();await expect(dialog.locator('dd').nth(0)).toHaveText('3');await expect(dialog.locator('dd').nth(1)).toHaveText('4');await expect(dialog.locator('dd').nth(4)).toHaveText(new Intl.DateTimeFormat('en-GB',timeOptions).format(newestOpen));
+    await expect(dialog.getByRole('region',{name:'Recorded open requests'}).locator('li')).toHaveCount(4);
     await page.screenshot({path:path.join(artifacts,'crm-inbox-open-activity.png'),fullPage:true});await dialog.getByRole('button',{name:'Close',exact:true}).click();
     await page.getByRole('button',{name:'Collapse older messages',exact:true}).click();await page.screenshot({path:path.join(artifacts,'crm-inbox-collapsed-messages.png'),fullPage:true});
     await page.goto('http://127.0.0.1:3100/overview',{waitUntil:'networkidle'});
@@ -772,6 +781,17 @@ try {
     await page.getByRole('button').filter({hasText:'Signature draft '+runId}).click();dialog=page.getByRole('dialog',{name:'New message',exact:true});await expect(dialog.locator('.compose-signature')).toHaveText('Second mailbox signature');await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
     await page.getByRole('button',{name:/^Inbox/}).click();await expect(page).toHaveURL(new RegExp('folder=inbox&account_id='+secondId));await page.getByLabel('Inbox mailbox',{exact:true}).selectOption(composeMailboxId);await page.locator('.conversation-list a').first().click();await expect(page).toHaveURL(new RegExp('account_id='+composeMailboxId));await expect(page.getByLabel('Inbox mailbox',{exact:true})).toHaveValue(composeMailboxId);
     await page.getByRole('textbox',{name:'Reply message',exact:true}).fill('Expanded reply signature');await page.getByRole('button',{name:'Expand reply with formatting and attachments',exact:true}).click();dialog=page.getByRole('dialog',{name:'Reply to email',exact:true});await expect(dialog.locator('.compose-signature')).toContainText('First mailbox signature');await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+  });
+  await check('Every campaign status has deletion controls with confirmation from list and details',async()=>{
+    const source=await db('campaigns').whereNull('deleted_at').first();
+    const campaigns=['draft','scheduled','active','paused','completed','archived'].map(status=>({...source,id:randomUUID(),version_id:null,name:'Deletion '+status+' '+runId,status,draft:typeof source.draft==='string'?source.draft:JSON.stringify(source.draft)}));
+    await db('campaigns').insert(campaigns);
+    await page.goto('http://127.0.0.1:3100/campaigns',{waitUntil:'networkidle'});
+    for(const campaign of campaigns)await expect(page.getByRole('button',{name:'Delete '+campaign.name,exact:true})).toBeVisible();
+    const draft=campaigns[0];await page.getByRole('button',{name:'Delete '+draft.name,exact:true}).click();let dialog=page.getByRole('dialog',{name:'Delete campaign?',exact:true});await expect(dialog).toContainText(draft.name);await dialog.getByRole('button',{name:'Cancel',exact:true}).click();await expect(page.getByRole('button',{name:'Delete '+draft.name,exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Delete '+draft.name,exact:true}).click();dialog=page.getByRole('dialog',{name:'Delete campaign?',exact:true});await page.screenshot({path:path.join(artifacts,'crm-delete-campaign.png'),fullPage:true});
+    await mutate(page,'DELETE','/campaigns/'+draft.id,()=>dialog.getByRole('button',{name:'Delete campaign',exact:true}).click());await expect(dialog).toBeHidden();await expect(page.getByRole('button',{name:'Delete '+draft.name,exact:true})).toHaveCount(0);
+    const active=campaigns[2];await page.getByRole('button',{name:'Review '+active.name,exact:true}).click();const detail=page.getByRole('dialog',{name:active.name,exact:true});await detail.getByRole('button',{name:'Delete campaign',exact:true}).click();dialog=page.getByRole('dialog',{name:'Delete campaign?',exact:true});await mutate(page,'DELETE','/campaigns/'+active.id,()=>dialog.getByRole('button',{name:'Delete campaign',exact:true}).click());await expect(detail).toBeHidden();await expect(page).toHaveURL('http://127.0.0.1:3100/campaigns');expect((await db('campaigns').where({id:active.id}).first()).deleted_at).toBeTruthy();
   });
   await check('Prospect delete actions confirm, cancel and remove the record from list and detail views',async()=>{
     await page.goto('http://127.0.0.1:3100/prospects',{waitUntil:'networkidle'});

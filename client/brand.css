@@ -148,3 +148,20 @@ input:focus, select:focus, textarea:focus { border-color: #3863ff; box-shadow: 0
   .inbox-workspace .inbox-layout { grid-template-columns:minmax(0,1fr); }
   .inbox-workspace .inbox-toolbar .search-field { min-width:0; width:100%; }
 }
+
+.mail-open-count { min-width:18px; padding:1px 5px; background:#edf3ff; color:#244ac4; border-radius:5px; font-size:11px; font-variant-numeric:tabular-nums; }
+.open-activity-subject { margin-top:4px; font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+.open-activity-toolbar { display:flex; align-items:end; gap:12px; margin-top:16px; }
+.open-activity-toolbar .field { flex:1; margin:0; }
+.open-activity-toolbar .button { margin-bottom:0; }
+.open-activity-history { margin:20px 0; }
+.open-activity-history h3 { font-size:14px; margin-bottom:8px; }
+.open-activity-history ol { list-style:none; padding:0; margin:0; max-height:220px; overflow-y:auto; }
+.open-activity-history li { display:flex; flex-direction:column; gap:3px; padding:10px 0; border-bottom:1px solid var(--border); font-size:13px; }
+.open-activity-history li time { font-variant-numeric:tabular-nums; }
+.open-activity-history li span { color:var(--muted); font-size:12px; }
+@media(max-width:480px) { .open-activity-toolbar { align-items:stretch; flex-direction:column; } }
+
+.campaign-row-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; }
+.campaign-row-actions .icon-button[title="Delete campaign"] { color:#a74343; }
+.campaign-row-actions .icon-button[title="Delete campaign"]:hover { background:#fff0f0; color:#912828; }

@@ -1,3 +1,4 @@
+import {ensureCampaignDeletion,deleteCampaign} from './campaign-deletion.js';
 import {ensureCampaignDesigns,normalizeCampaignDraft,assertCampaignReady} from './campaign-designs.js';
 import {designSchema} from '../shared/campaign-design.js';
 import { ensureMailboxSignatures } from './mailbox-signatures.js';
@@ -7,6 +8,7 @@ import { db, json, type Database } from './db.js';
 import { requireUser, permit, consumeRateLimit, can } from './auth.js';
 import { registerControlledTestContact } from './contacts.js';
 import { ensureProspectDeletion } from './prospect-deletion.js';
+import {messageOpenActivity} from './open-activity.js';
 import { HttpError, id, audit, normalizeEmail } from './lib/util.js';
 import { getSettings } from './settings.js';
 import { renderStep, sanitizeEmail, followupTime, nextSendingTime } from './engine/content.js';
@@ -23,7 +25,7 @@ const draftSchema = z.object({name:z.string().trim().min(1).max(200),account_id:
 const templateSchema = z.object({name:z.string().trim().min(1).max(200),subject:stepSchema.shape.subject,body_text:stepSchema.shape.body_text,body_html:stepSchema.shape.body_html,design:designSchema.nullable().optional(),preview_text:z.string().max(300).default(''),email_type:z.enum(['plain','designed']).nullable().optional()});
 const parseContact = (c:any) => ({...c,tags:json(c.tags,[]),custom_fields:json(c.custom_fields,{})});
 const publicCampaign = (c:any) => ({...c,draft:json(c.draft,{}),open_tracking:!!c.open_tracking,click_tracking:!!c.click_tracking});
-async function campaignOr404(campaignId: string, trx: Database = db) { const campaign = await trx('campaigns').where({id:campaignId}).first(); if (!campaign) throw new HttpError(404,'Campaign not found.'); return campaign; }
+async function campaignOr404(campaignId: string, trx: Database = db) { const campaign = await trx('campaigns').where({id:campaignId}).first(); if (!campaign||campaign.deleted_at) throw new HttpError(404,'Campaign not found.'); return campaign; }
 
 async function audience(draft: any, account: any, trx: Database = db) {
   const included:any[] = [], excluded:any[] = [];
@@ -49,11 +51,11 @@ async function publish(campaign: any, draft: any, actorId: string, trx: Database
 }
 
 export const campaignRouter = Router();
-campaignRouter.use(requireUser,async(_req,_res,next)=>{await ensureCampaignDesigns();next();});
+campaignRouter.use(requireUser,async(_req,_res,next)=>{await ensureCampaignDesigns();await ensureCampaignDeletion();next();});
 campaignRouter.get('/',async(_req,res)=>{
   const accepted=db('send_attempts').select('campaign_id').count({accepted:'id'}).where({status:'accepted',is_test:false}).groupBy('campaign_id').as('accepted_totals');
   const replies=db('messages').select('campaign_id').count({human_replies:'id'}).where({direction:'inbound',classification:'human_reply',is_test:false}).groupBy('campaign_id').as('reply_totals');
-  const rows=await db('campaigns as c').leftJoin('email_accounts as a','a.id','c.account_id').leftJoin(accepted,'accepted_totals.campaign_id','c.id').leftJoin(replies,'reply_totals.campaign_id','c.id').select('c.*','a.email as account_email',db.raw('COALESCE(accepted_totals.accepted,0) as accepted'),db.raw('COALESCE(reply_totals.human_replies,0) as human_replies')).orderBy('c.created_at','desc');
+  const rows=await db('campaigns as c').leftJoin('email_accounts as a','a.id','c.account_id').leftJoin(accepted,'accepted_totals.campaign_id','c.id').leftJoin(replies,'reply_totals.campaign_id','c.id').whereNull('c.deleted_at').select('c.*','a.email as account_email',db.raw('COALESCE(accepted_totals.accepted,0) as accepted'),db.raw('COALESCE(reply_totals.human_replies,0) as human_replies')).orderBy('c.created_at','desc');
   res.json({items:rows.map(c=>({...publicCampaign(c),accepted:Number(c.accepted),human_replies:Number(c.human_replies)}))});
 });
 campaignRouter.post('/render-preview',async(req,res)=>{const input=z.object({email_type:z.enum(['plain','designed']),steps:z.array(stepSchema).min(1).max(10),contact_id:z.string().uuid().optional()}).parse(req.body);const normalized=await normalizeCampaignDraft(input);const contact=input.contact_id?await db('contacts').where({id:input.contact_id}).first():{first_name:'Jamie',last_name:'Rivera',company_name:'Coastal Studio',website:'https://example.com',city:'San Diego'};if(!contact)throw new HttpError(404,'Contact not found.');try{res.json({steps:normalized.steps.map(step=>renderStep(step,parseContact(contact),normalized))});}catch(error){throw new HttpError(400,(error as Error).message);}});
@@ -64,6 +66,7 @@ campaignRouter.post('/',permit('campaigns:write'),async(req,res)=>{
   await db.transaction(async trx=>{await trx('campaigns').insert(campaign);await audit(req.user!.id,'campaign.created','campaign',campaign.id,{name:draft.name},trx);});
   res.status(201).json(publicCampaign(campaign));
 });
+campaignRouter.delete('/:id',permit('campaigns:write'),async(req,res)=>{await deleteCampaign(z.string().uuid().parse(req.params.id),req.user!.id);res.json({ok:true});});
 campaignRouter.get('/:id',async(req,res)=>{
   const campaign=await campaignOr404(String(req.params.id)),draft=json(campaign.draft,{}),account=await db('email_accounts').where({id:campaign.account_id}).first();
   const published=campaign.version_id?await db('campaign_versions').where({id:campaign.version_id}).first():null;
@@ -74,7 +77,7 @@ campaignRouter.get('/:id',async(req,res)=>{
 });
 campaignRouter.patch('/:id',permit('campaigns:write'),async(req,res)=>{
   const result=await db.transaction(async trx=>{
-    const c=await trx('campaigns').where({id:req.params.id}).forUpdate().first();if(!c)throw new HttpError(404,'Campaign not found.');
+    const c=await trx('campaigns').where({id:req.params.id}).forUpdate().first();if(!c||c.deleted_at)throw new HttpError(404,'Campaign not found.');
     if(c.status!=='draft')throw new HttpError(409,'Published campaigns require the explicit revise action.');
     const draft=await normalizeCampaignDraft(draftSchema.parse({...json<any>(c.draft,{}),...req.body}),trx);
     if(!await trx('email_accounts').where({id:draft.account_id}).first())throw new HttpError(400,'Mailbox not found.');
@@ -98,6 +101,7 @@ campaignRouter.post('/:id/test',permit('campaigns:write'),async(req,res)=>{
   await ensureProspectDeletion();
   const job=await db.transaction(async trx=>{
   await trx('business_settings').where({id:'agency'}).forUpdate().first();
+  await campaignOr404(c.id,trx);
   const contact=input.confirm_test_address?await registerControlledTestContact(email,req.user!.id,trx):await trx('contacts').where({email}).first();
   if(!contact)throw new HttpError(400,'This test address is not in this workspace. Confirm that you control it below, or add it in Prospects with test consent.');
   const reason=await contactEligibility(contact,account,trx,{reply:true});if(reason)throw new HttpError(400,reason);
@@ -109,7 +113,7 @@ campaignRouter.post('/:id/test',permit('campaigns:write'),async(req,res)=>{
 campaignRouter.post('/:id/launch',permit('campaigns:write'),async(req,res)=>{
   const result=await db.transaction(async trx=>{
     await trx('business_settings').where({id:'agency'}).forUpdate().first();
-    const c=await trx('campaigns').where({id:req.params.id}).forUpdate().first();if(!c)throw new HttpError(404,'Campaign not found.');if(c.status!=='draft')throw new HttpError(409,'Campaign has already been published.');
+    const c=await trx('campaigns').where({id:req.params.id}).forUpdate().first();if(!c||c.deleted_at)throw new HttpError(404,'Campaign not found.');if(c.status!=='draft')throw new HttpError(409,'Campaign has already been published.');
     const account=await trx('email_accounts').where({id:c.account_id}).first();if(account.status!=='active'||!account.verified_at)throw new HttpError(409,'Validate and activate the sending mailbox first.');
     const draft=draftSchema.parse(json(c.draft,{}));assertCampaignReady(draft);const review=await audience(draft,account,trx);if(!review.included.length)throw new HttpError(400,'No eligible contacts. Review the audience exclusions.',review);
     const settings=await getSettings(trx);if(!settings.business_address?.trim())throw new HttpError(400,'Enter the business address in settings before launching marketing messages.');
@@ -120,7 +124,7 @@ campaignRouter.post('/:id/launch',permit('campaigns:write'),async(req,res)=>{
   });res.json(result);
 });
 for(const action of ['pause','resume','archive'] as const)campaignRouter.post(`/:id/${action}`,permit('campaigns:write'),async(req,res)=>{
-  const result=await db.transaction(async trx=>{const c=await trx('campaigns').where({id:req.params.id}).forUpdate().first();if(!c)throw new HttpError(404,'Campaign not found.');
+  const result=await db.transaction(async trx=>{const c=await trx('campaigns').where({id:req.params.id}).forUpdate().first();if(!c||c.deleted_at)throw new HttpError(404,'Campaign not found.');
     if(action==='resume'&&c.status!=='paused')throw new HttpError(409,'Only paused campaigns can resume.');if(action==='pause'&&!['active','scheduled'].includes(c.status))throw new HttpError(409,'Only scheduled or active campaigns can pause.');
     const status=action==='pause'?'paused':action==='archive'?'archived':c.scheduled_at&&new Date(c.scheduled_at)>new Date()?'scheduled':'active';await trx('campaigns').where({id:c.id}).update({status,updated_at:new Date()});
     if(action==='archive'){await trx('enrollments').where({campaign_id:c.id}).whereIn('status',['active','paused']).update({status:'stopped',stop_reason:'Campaign archived',updated_at:new Date()});await trx('jobs').where({campaign_id:c.id}).whereIn('status',['queued','leased']).update({status:'cancelled',lease_owner:null,lease_until:null,updated_at:new Date()});}
@@ -128,7 +132,7 @@ for(const action of ['pause','resume','archive'] as const)campaignRouter.post(`/
 });
 campaignRouter.post('/:id/revise',permit('campaigns:write'),async(req,res)=>{
   const body=z.object({confirmed:z.literal(true),draft:draftSchema}).parse(req.body);body.draft=await normalizeCampaignDraft(body.draft);assertCampaignReady(body.draft);
-  const result=await db.transaction(async trx=>{await trx('business_settings').where({id:'agency'}).forUpdate().first();const c=await trx('campaigns').where({id:req.params.id}).forUpdate().first();if(!c)throw new HttpError(404,'Campaign not found.');if(!['active','paused','scheduled'].includes(c.status))throw new HttpError(409,'Only a running or paused campaign can be revised.');
+  const result=await db.transaction(async trx=>{await trx('business_settings').where({id:'agency'}).forUpdate().first();const c=await trx('campaigns').where({id:req.params.id}).forUpdate().first();if(!c||c.deleted_at)throw new HttpError(404,'Campaign not found.');if(!['active','paused','scheduled'].includes(c.status))throw new HttpError(409,'Only a running or paused campaign can be revised.');
     if(body.draft.account_id!==c.account_id)throw new HttpError(400,'Existing enrollments retain their original sending mailbox. Create a new campaign for a replacement mailbox.');
     const previous=json((await trx('campaign_versions').where({id:c.version_id}).first()).snapshot,{});if(JSON.stringify([...new Set(body.draft.contact_ids)].sort())!==JSON.stringify([...new Set(previous.contact_ids)].sort()))throw new HttpError(400,'Audience cannot change during revision. Create a new campaign for new contacts.');
     if((body.draft.scheduled_at?new Date(body.draft.scheduled_at).getTime():null)!==(previous.scheduled_at?new Date(previous.scheduled_at).getTime():null))throw new HttpError(400,'Published launch schedules cannot change during content revision. Pause the campaign or create a new campaign with a new launch time.');
@@ -224,6 +228,15 @@ inboxRouter.post('/compose',permit('inbox:write'),async(req,res)=>{
     if(body.draft_id)await trx('mail_drafts').where({id:body.draft_id,user_id:req.user!.id}).delete();
     await audit(req.user!.id,'inbox.compose_queued','email_account',account.id,{job_id:jobId},trx);
   });res.status(202).json({job_id:jobId});
+});
+inboxRouter.get('/:id/opens',async(req,res)=>{
+  const messageId=z.string().uuid().parse(req.params.id);
+  const activity=await db.transaction(async trx=>{
+    const message=await trx('messages').where({id:messageId,direction:'outbound'}).first();
+    if(!message)throw new HttpError(404,'Sent message not found.');
+    return messageOpenActivity(message,trx);
+  },{isolationLevel:'repeatable read'});
+  res.json(activity);
 });
 inboxRouter.get('/:id',async(req,res)=>{
   const message=await db('messages').where({id:req.params.id}).first();if(!message)throw new HttpError(404,'Message not found.');

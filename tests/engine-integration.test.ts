@@ -104,6 +104,44 @@ describe.skipIf(!enabled)('durable engine against an isolated MySQL/MariaDB test
     expect((await request(app).post(url).send({email,confirm_test_address:true})).status).toBe(400);expect(await db('contacts').where({email}).first()).toBeUndefined();
     expect(fake.sendMail).not.toHaveBeenCalled();
   });
+  it('deletes every campaign status idempotently and prevents further campaign actions',async()=>{
+    for(const status of ['draft','scheduled','active','paused','completed','archived']){
+      const {campaign}=await createCampaign();await db('campaigns').where({id:campaign.id}).update({status});
+      const url='/api/campaigns/'+campaign.id;
+      expect((await request(app).delete(url)).status).toBe(200);expect((await request(app).delete(url)).status).toBe(200);
+      expect(await db('campaigns').where({id:campaign.id}).first()).toMatchObject({status:'archived',deleted_at:expect.any(Date)});
+      expect((await request(app).get('/api/campaigns')).body.items.some((row:any)=>row.id===campaign.id)).toBe(false);
+      expect((await request(app).get(url)).status).toBe(404);expect((await request(app).patch(url).send({name:'Restore'})).status).toBe(404);
+      expect((await request(app).post(url+'/launch').send({})).status).toBe(404);expect((await request(app).post(url+'/preview').send({})).status).toBe(404);expect((await request(app).post(url+'/test').send({email:contact.email})).status).toBe(404);
+      for(const action of ['pause','resume','archive'])expect((await request(app).post(url+'/'+action).send({})).status).toBe(404);
+      expect(await db('audit_logs').where({action:'campaign.deleted',entity_id:campaign.id})).toHaveLength(1);
+    }
+    expect(await db('contacts').where({id:contact.id}).first()).toBeTruthy();expect(fake.sendMail).not.toHaveBeenCalled();
+  });
+  it('cancels reserved and queued campaign mail on deletion, including stale test jobs',async()=>{
+    const {campaign,prepared}=await outboundForCampaign();
+    expect((await request(app).delete('/api/campaigns/'+campaign.id)).status).toBe(200);
+    expect((await db('jobs').where({id:prepared.job.id}).first()).status).toBe('cancelled');expect((await db('send_attempts').where({id:prepared.attempt.id}).first()).status).toBe('cancelled');
+    expect((await db('enrollments').where({campaign_id:campaign.id}).first()).status).toBe('stopped');
+    const stale=await insertJob({campaign_id:campaign.id});const claimed=await claimJob(uuid());expect(claimed.id).toBe(stale.id);expect(await reserveSend(claimed)).toBeNull();expect((await db('jobs').where({id:stale.id}).first()).status).toBe('cancelled');expect(fake.sendMail).not.toHaveBeenCalled();
+  });
+  it('retains sent email and tracking history, while keeping unknown SMTP outcomes held',async()=>{
+    const unknown=await outboundForCampaign();await db('send_attempts').where({id:unknown.prepared.attempt.id}).update({reserved_at:new Date(Date.now()-120000)});const accepted=await outboundForCampaign();await finishAccepted(accepted.prepared.attempt.id);
+    await db('send_attempts').where({id:unknown.prepared.attempt.id}).update({status:'unknown'});await db('jobs').where({id:unknown.prepared.job.id}).update({status:'held'});
+    for(const campaign of [accepted.campaign,unknown.campaign])expect((await request(app).delete('/api/campaigns/'+campaign.id)).status).toBe(200);
+    expect((await db('send_attempts').where({id:accepted.prepared.attempt.id}).first()).status).toBe('accepted');expect(await db('messages').where({id:accepted.prepared.message.id}).first()).toBeTruthy();expect(await db('tracking_tokens').where({message_id:accepted.prepared.message.id})).not.toHaveLength(0);
+    expect((await db('send_attempts').where({id:unknown.prepared.attempt.id}).first()).status).toBe('unknown');expect((await db('jobs').where({id:unknown.prepared.job.id}).first()).status).toBe('held');expect(fake.sendMail).not.toHaveBeenCalled();
+  });
+  it('requires campaign permission and refuses deletion across the SMTP submission boundary',async()=>{
+    const {campaign,prepared}=await outboundForCampaign(),url='/api/campaigns/'+campaign.id,savedActor=actor;
+    actor={...actor,role:'member',permissions:[]};expect((await request(app).delete(url)).status).toBe(403);actor=undefined;expect((await request(app).delete(url)).status).toBe(401);actor=savedActor;
+    await db('send_attempts').where({id:prepared.attempt.id}).update({status:'submitting'});expect((await request(app).delete(url)).status).toBe(409);
+    expect((await db('campaigns').where({id:campaign.id}).first()).deleted_at).toBeNull();expect((await db('jobs').where({id:prepared.job.id}).first()).status).toBe('leased');
+  });
+  it('cancels a campaign deleted after reservation but before SMTP submission',async()=>{
+    const {campaign}=await launch();fake.beforeTransport.mockImplementationOnce(async()=>{expect((await request(app).delete('/api/campaigns/'+campaign.id)).status).toBe(200);});
+    await runWorker({budgetMs:20000,maxJobs:5});expect(fake.beforeTransport).toHaveBeenCalled();expect(fake.sendMail).not.toHaveBeenCalled();expect((await db('jobs').where({campaign_id:campaign.id}).first()).status).toBe('cancelled');
+  });
   it('saves and reopens actual plain-text campaigns, disables HTML open tracking and preserves MIME whitespace',async()=>{
     const text='Hi {{first_name|there}},\n\n  Keep two spaces and \u{1F60A}.\nVisit https://example.com\n\nLast paragraph.';
     const result=await createCampaign({email_type:'plain',sender_name:'Campaign Team',reply_to:'replies@example.test',open_tracking:true,steps:[{subject:'Plain {{company_name|your business}}',body_text:text,body_html:'<b>Must not send</b>',delay_days:0}]});
@@ -503,6 +541,22 @@ describe.skipIf(!enabled)('durable engine against an isolated MySQL/MariaDB test
     expect((await enrichMail([message]))[0]).toMatchObject({open_count:4,raw_open_count:4,excluded_open_count:0,open_filter_enabled:false});
     await db('messages').where({id:message.id}).update({open_tracking:false});await request(app).get(path);expect(await db('tracking_events').where({message_id:message.id})).toHaveLength(4);
     await request(app).get('/t/open/'+'c'.repeat(64)+'.gif');expect(await db('tracking_events').where({message_id:message.id})).toHaveLength(4);
+  });
+  it('serves a message-specific, bounded open history with exact UTC timestamps and matching totals',async()=>{
+    const message=await insertInboxMessage({direction:'outbound',open_tracking:true});
+    const other=await insertInboxMessage({direction:'outbound',open_tracking:true});
+    const first=Date.parse('2026-11-06T18:12:43.123Z');
+    await db('tracking_events').insert(Array.from({length:52},(_,index)=>({id:uuid(),message_id:message.id,kind:'open',bot:index===51,created_at:new Date(first+index*1000)})));
+    await db('tracking_events').insert({id:uuid(),message_id:other.id,kind:'open',bot:false,created_at:date()});
+    const response=await request(app).get('/api/inbox/'+message.id+'/opens');expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({message_id:message.id,open_count:51,raw_open_count:52,excluded_open_count:1,first_opened_at:'2026-11-06T18:12:43.123Z',last_opened_at:'2026-11-06T18:13:33.123Z'});
+    expect(response.body.events).toHaveLength(50);expect(response.body.events[0]).toMatchObject({recorded_at:'2026-11-06T18:13:34.123Z',scanner:true,excluded:true});
+    expect(response.body.events[1].recorded_at).toBe(response.body.last_opened_at);
+    expect(response.body).not.toHaveProperty('body_html');expect(response.body).not.toHaveProperty('tracking_token');
+    const [enriched]=await enrichMail([message]);expect(enriched.open_count).toBe(response.body.open_count);expect(enriched.last_opened_at).toBe(response.body.last_opened_at);
+    expect((await request(app).get('/api/inbox/'+other.id+'/opens')).body.open_count).toBe(1);
+    const inbound=await insertInboxMessage();expect((await request(app).get('/api/inbox/'+inbound.id+'/opens')).status).toBe(404);
+    const savedActor=actor;actor=undefined;expect((await request(app).get('/api/inbox/'+message.id+'/opens')).status).toBe(401);actor=savedActor;
   });
   it('never suppresses on GET, honors one-click POST and rejects unsafe stored redirects',async()=>{
     const {prepared}=await outboundForCampaign(),token=await db('tracking_tokens').where({message_id:prepared.message.id,kind:'unsubscribe'}).first();

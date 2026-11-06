@@ -1,5 +1,13 @@
 # Testing and acceptance
 
+## Campaign deletion (2026-11-06)
+
+The disposable MariaDB suite passes 204 tests across 20 files; production build/typechecks and all 29 browser checks pass. API tests cover all six campaign statuses, idempotency, action denial after deletion, session/permissions, reserved/queued/test cancellation, accepted-message/token retention, unknown outcomes held, SMTP-submitting rejection, and deletion between reservation and submission with no SMTP call. Browser checks verify delete controls for each status, Cancel behavior, successful list/detail deletion and return to the list. The confirmation screenshot was visually reviewed. Live sending stayed disabled; only isolated fixtures were deleted.
+
+## Per-message open history and Pakistan time (2026-11-06)
+
+The disposable MariaDB suite passes 199 tests across 20 files. New tests verify UTC serialization for Date/SQL/offset values, matching counts/timestamps from one aggregate, message isolation, session requirements, inbound rejection, scanner exclusion, and the 50-row history limit. All 28 browser checks pass, including Pakistan default/UTC switching, exact first/last timestamps with seconds, per-request history, and a count/time update after recording a new request while the popup stays open. The popup screenshot was visually reviewed. Production build/typechecks pass. The browser fixtures use synthetic events and fake mail; no live email or external Gmail/Outlook account was used, and no exact human-read count is claimed.
+
 ## Inbox navigation and readability (2026-10-27)
 
 Production build/typechecks and all 28 local browser acceptance checks pass. The Inbox main navigation now uses the shared 260px sidebar width, with the same padding and content as other dashboard pages. Browser checks compare Inbox sidebar width/main offset with Overview, verify clear-search behavior and empty results, preserve at least five compact rows and a 400px reading area at 1366x768, and verify independent pane scrolling and mobile navigation. Laptop/mobile screenshots were reviewed. Search includes sender/recipient display names; short list dates retain the full timestamp in a tooltip. The mailbox-filtering fixture now waits for the Inbox folder URL before changing accounts, avoiding its earlier draft-folder navigation race. Live sending remained disabled.

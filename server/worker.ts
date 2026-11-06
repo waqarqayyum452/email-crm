@@ -1,3 +1,4 @@
+import {ensureCampaignDeletion} from './campaign-deletion.js';
 import {ensureCampaignDesigns} from './campaign-designs.js';
 import { randomUUID } from 'node:crypto';
 import { db, json, type Database } from './db.js';
@@ -107,6 +108,7 @@ async function replyRecipientIssue(trx:Database,job:any,payload:any,contact:any)
 }
 
 async function actualEligibility(trx:Database,job:any,account:any,settings:any,payload:any) {
+  if(job.campaign_id){const campaign=await trx('campaigns').where({id:job.campaign_id}).first();if(!campaign||campaign.deleted_at)return 'Campaign deleted';}
   if(settings.paused)return 'All sending is paused in settings';
   if(!config.liveSendEnabled)return 'Sending is disabled by LIVE_SEND_ENABLED';
   if(!payload.is_reply&&payload.is_manual!==true&&!String(settings.business_address||'').trim())return 'Enter the business address before sending marketing or test messages';
@@ -124,14 +126,14 @@ async function actualEligibility(trx:Database,job:any,account:any,settings:any,p
 
 /** The agency settings lock serializes capacity across all mailboxes and workers. */
 export async function reserveSend(claimed:any) {
-  await ensureCampaignDesigns();
+  await ensureCampaignDesigns();await ensureCampaignDeletion();
   await ensureMailFeatures();
   return db.transaction(async trx=>{
     await trx('business_settings').where({id:'agency'}).forUpdate().first();
     const job=await trx('jobs').where({id:claimed.id}).forUpdate().first();if(!job||job.status!=='leased'||job.lease_owner!==claimed.lease_owner)return null;
     const settings=await getSettings(trx),account=await trx('email_accounts').where({id:job.account_id}).first(),payload=json(job.payload,{});
     const reason=await actualEligibility(trx,job,account,settings,payload);
-    if(reason){if(/suppressed|consent|evidence|outreach|no longer exists|Enrollment|^(?:Reply|Manual) recipient|valid recipient/i.test(reason))return cancelJob(trx,job,reason);return delayJob(trx,job,reason,new Date(Date.now()+60000));}
+    if(reason){if(/Campaign deleted|suppressed|consent|evidence|outreach|no longer exists|Enrollment|^(?:Reply|Manual) recipient|valid recipient/i.test(reason))return cancelJob(trx,job,reason);return delayJob(trx,job,reason,new Date(Date.now()+60000));}
     // Individually written Inbox mail is ready for the next worker tick. The
     // campaign window and pacing apply only to automated/test campaign work.
     if(payload.is_manual!==true){const eligibleAt=nextSendingTime(now(),settings);if(eligibleAt.getTime()>Date.now()+1000)return delayJob(trx,job,'Outside the configured sending window',eligibleAt);}
@@ -167,7 +169,7 @@ async function markSubmitting(prepared:any) {
     const job=await trx('jobs').where({id:prepared.job.id}).forUpdate().first(),settings=await getSettings(trx),account=await trx('email_accounts').where({id:prepared.account.id}).first(),payload=json(job?.payload,{});
     let reason=job?.status!=='leased'||job.lease_owner!==prepared.job.lease_owner||new Date(job.lease_until)<=now()?'Job lease was cancelled or expired':await actualEligibility(trx,job,account,settings,payload);
     if(!reason&&payload.is_manual!==true&&nextSendingTime(now(),settings).getTime()>Date.now()+1000)reason='Sending window closed';
-    if(reason){await trx('send_attempts').where({id:prepared.attempt.id}).update({status:'cancelled',retryable:false,error_message:reason});await recordOutcome(trx,prepared.attempt.id,'cancelled','ELIGIBILITY_CHANGED',reason);if(job?.status==='leased'){if(/^(?:Reply|Manual) recipient|suppressed|consent|valid recipient/i.test(reason))await cancelJob(trx,job,reason);else await delayJob(trx,job,reason);}return false;}
+    if(reason){await trx('send_attempts').where({id:prepared.attempt.id}).update({status:'cancelled',retryable:false,error_message:reason});await recordOutcome(trx,prepared.attempt.id,'cancelled','ELIGIBILITY_CHANGED',reason);if(job?.status==='leased'){if(/^Campaign deleted$|^(?:Reply|Manual) recipient|suppressed|consent|valid recipient/i.test(reason))await cancelJob(trx,job,reason);else await delayJob(trx,job,reason);}return false;}
     await trx('send_attempts').where({id:prepared.attempt.id,status:'reserved'}).update({status:'submitting',submitted_at:now()});return true;
   });
 }

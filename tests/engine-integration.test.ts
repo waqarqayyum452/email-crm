@@ -50,7 +50,7 @@ async function blockRecipient(reason:string,email=contact.email){
   else await db('contacts').where({email}).update({consent_status:'revoked',updated_at:date()});
 }
 async function createCampaign(extra:any={}){
-  const draft={name:'Controlled campaign',account_id:account.id,steps:[{subject:'Hello {{first_name}}',body_text:'First message',delay_days:0},{subject:'Follow up',body_text:'Second message',delay_days:3}],contact_ids:[contact.id],open_tracking:false,click_tracking:false,...extra};
+  const draft={recipient_policy:'consent_required',name:'Controlled campaign',account_id:account.id,steps:[{subject:'Hello {{first_name}}',body_text:'First message',delay_days:0},{subject:'Follow up',body_text:'Second message',delay_days:3}],contact_ids:[contact.id],open_tracking:false,click_tracking:false,...extra};
   const response=await request(app).post('/api/campaigns').send(draft);expect(response.status).toBe(201);return {campaign:response.body,draft};
 }
 async function launch(extra:any={}){const result=await createCampaign(extra);const response=await request(app).post(`/api/campaigns/${result.campaign.id}/launch`).send({});expect(response.status,response.body.error).toBe(200);return {campaign:response.body.campaign,draft:result.draft};}
@@ -141,6 +141,41 @@ describe.skipIf(!enabled)('durable engine against an isolated MySQL/MariaDB test
   it('cancels a campaign deleted after reservation but before SMTP submission',async()=>{
     const {campaign}=await launch();fake.beforeTransport.mockImplementationOnce(async()=>{expect((await request(app).delete('/api/campaigns/'+campaign.id)).status).toBe(200);});
     await runWorker({budgetMs:20000,maxJobs:5});expect(fake.beforeTransport).toHaveBeenCalled();expect(fake.sendMail).not.toHaveBeenCalled();expect((await db('jobs').where({campaign_id:campaign.id}).first()).status).toBe('cancelled');
+  });
+  it('defaults new campaigns to saved contacts and sends tests without manufacturing consent',async()=>{
+    await db('contacts').where({id:contact.id}).update({consent_status:'unknown',consent_evidence:''});
+    const created=await request(app).post('/api/campaigns').send({name:'Saved contact default',account_id:account.id,steps:[{subject:'Test',body_text:'Hello',delay_days:0}],contact_ids:[contact.id]});expect(created.status).toBe(201);expect(created.body.draft.recipient_policy).toBe('saved_contacts');
+    expect((await request(app).post('/api/campaigns/'+created.body.id+'/test').send({email:contact.email})).status).toBe(202);await runWorker({budgetMs:20000,maxJobs:5});expect(fake.sendMail).toHaveBeenCalledOnce();
+    expect(await db('contacts').where({id:contact.id}).first()).toMatchObject({consent_status:'unknown',consent_evidence:''});expect(await db('contact_consents')).toHaveLength(0);
+  });
+  it('sends a saved-contact campaign and still blocks revoked consent at actual submission',async()=>{
+    await db('contacts').where({id:contact.id}).update({consent_status:'unknown',consent_evidence:''});
+    const {campaign}=await launch({recipient_policy:'saved_contacts'});await runWorker({budgetMs:20000,maxJobs:5});expect(fake.sendMail).toHaveBeenCalledOnce();
+    expect((await db('contacts').where({id:contact.id}).first()).consent_status).toBe('unknown');
+    const next=await db('jobs').where({campaign_id:campaign.id,status:'queued'}).first();await db('jobs').where({id:next.id}).update({due_at:date()});await db('contacts').where({id:contact.id}).update({consent_status:'revoked'});
+    await runWorker({budgetMs:20000,maxJobs:5});expect(fake.sendMail).toHaveBeenCalledOnce();expect((await db('jobs').where({id:next.id}).first()).status).toBe('cancelled');
+  });
+  it('persists follow-up durations and schedules them from actual acceptance',async()=>{
+    const {campaign,prepared}=await outboundForCampaign();
+    // A published revision updates only unsent steps and retains the accepted history.
+    const acceptedAt=date();await finishAccepted(prepared.attempt.id,acceptedAt);
+    const saved=await db('campaigns').where({id:campaign.id}).first();const draft=json(saved.draft,{});draft.steps[1].delay_seconds=120;draft.steps[1].delay_unit='minutes';draft.steps[1].delay_days=0;draft.send_interval_seconds=60;
+    const revision=await request(app).post('/api/campaigns/'+campaign.id+'/revise').send({confirmed:true,draft});expect(revision.status).toBe(200);
+    const job=await db('jobs').where({campaign_id:campaign.id,status:'queued'}).first();expect(new Date(job.due_at).getTime()).toBe(acceptedAt.getTime()+120000);
+    expect(await db('sequence_steps').where({version_id:revision.body.version_id,position:1}).first()).toMatchObject({delay_seconds:120});
+    const reopened=await request(app).get('/api/campaigns/'+campaign.id);expect(reopened.body.steps[1].delay_seconds).toBe(120);expect(reopened.body.steps[1].delay_unit).toBe('minutes');expect(reopened.body.draft.send_interval_seconds).toBe(60);
+  });
+  it('uses the published recipient interval before every campaign send',async()=>{
+    const prior=await outboundForCampaign();await db('send_attempts').where({id:prior.prepared.attempt.id}).update({reserved_at:new Date(Date.now()-90000)});
+    const secondContact=await insertContact();const {campaign}=await launch({send_interval_seconds:60,contact_ids:[contact.id,secondContact.id]});
+    const first=await claimJob(uuid());expect(first.campaign_id).toBe(campaign.id);expect(await reserveSend(first)).toBeTruthy();
+    const second=await claimJob(uuid());expect(await reserveSend(second)).toBeNull();const delayed=await db('jobs').where({id:second.id}).first();expect(delayed.last_error).toBe('Minimum interval between messages');expect(new Date(delayed.due_at).getTime()-Date.now()).toBeGreaterThan(55000);expect(new Date(delayed.due_at).getTime()-Date.now()).toBeLessThanOrEqual(60000);
+    expect(fake.sendMail).not.toHaveBeenCalled();
+  });
+  it('rejects invalid intervals and keeps strict opt-in available as an explicit campaign rule',async()=>{
+    const {draft}=await createCampaign();for(const value of [0,59,86401])expect((await request(app).post('/api/campaigns').send({...draft,send_interval_seconds:value})).status).toBe(400);
+    expect((await request(app).post('/api/campaigns').send({...draft,steps:[{subject:'Test',body_text:'Hi',delay_seconds:31536001}]})).status).toBe(400);
+    await db('contacts').where({id:contact.id}).update({consent_status:'unknown',consent_evidence:''});const {campaign}=await createCampaign({recipient_policy:'consent_required'});expect((await request(app).post('/api/campaigns/'+campaign.id+'/launch').send({})).status).toBe(400);
   });
   it('saves and reopens actual plain-text campaigns, disables HTML open tracking and preserves MIME whitespace',async()=>{
     const text='Hi {{first_name|there}},\n\n  Keep two spaces and \u{1F60A}.\nVisit https://example.com\n\nLast paragraph.';

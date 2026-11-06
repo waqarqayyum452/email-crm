@@ -1,3 +1,4 @@
+import {ensureCampaignTiming} from './campaign-timing.js';
 import {ensureCampaignDeletion} from './campaign-deletion.js';
 import {ensureCampaignDesigns} from './campaign-designs.js';
 import { randomUUID } from 'node:crypto';
@@ -5,7 +6,7 @@ import { db, json, type Database } from './db.js';
 import { config } from './config.js';
 import { getSettings } from './settings.js';
 import { audit, HttpError, id, normalizeEmail } from './lib/util.js';
-import { renderStep, nextSendingTime, followupTime, smtpFailure } from './engine/content.js';
+import { renderStep, nextSendingTime, followupForStep, smtpFailure } from './engine/content.js';
 import { consumedStatuses, contactEligibility, manualRecipientEligibility, stopContact } from './engine/policy.js';
 import { smtpTransport, syncMailbox } from './engine/mail.js';
 import { prepareMarketing, prepareManualTracking } from './tracking.js';
@@ -107,6 +108,10 @@ async function replyRecipientIssue(trx:Database,job:any,payload:any,contact:any)
   return null;
 }
 
+async function campaignOptions(trx:Database,job:any,payload:any,enrollment?:any) {
+  const member=enrollment||(job.enrollment_id?await trx('enrollments').where({id:job.enrollment_id}).first():null);
+  return member?json((await trx('campaign_versions').where({id:member.version_id}).first())?.snapshot,{}):payload;
+}
 async function actualEligibility(trx:Database,job:any,account:any,settings:any,payload:any) {
   if(job.campaign_id){const campaign=await trx('campaigns').where({id:job.campaign_id}).first();if(!campaign||campaign.deleted_at)return 'Campaign deleted';}
   if(settings.paused)return 'All sending is paused in settings';
@@ -120,13 +125,13 @@ async function actualEligibility(trx:Database,job:any,account:any,settings:any,p
   const contact=payload.is_manual===true?await trx('contacts').where({email:typeof payload.manual_recipient==='string'?payload.manual_recipient:''}).first():await trx('contacts').where({id:enrollment?.contact_id||payload.contact_id}).first();
   const recipientIssue=await replyRecipientIssue(trx,job,payload,contact);if(recipientIssue)return recipientIssue;
   if(payload.is_manual===true)return manualRecipientEligibility(payload.manual_recipient,account,trx);
-  const reason=await contactEligibility(contact,account,trx,{reply:!!payload.is_reply||!!payload.is_test});if(reason)return reason;
+  const options=await campaignOptions(trx,job,payload,enrollment);const reason=await contactEligibility(contact,account,trx,{reply:!!payload.is_reply||!!payload.is_test,allowSavedContacts:options.recipient_policy==='saved_contacts'});if(reason)return reason;
   return null;
 }
 
 /** The agency settings lock serializes capacity across all mailboxes and workers. */
 export async function reserveSend(claimed:any) {
-  await ensureCampaignDesigns();await ensureCampaignDeletion();
+  await ensureCampaignDesigns();await ensureCampaignDeletion();await ensureCampaignTiming();
   await ensureMailFeatures();
   return db.transaction(async trx=>{
     await trx('business_settings').where({id:'agency'}).forUpdate().first();
@@ -142,7 +147,7 @@ export async function reserveSend(claimed:any) {
     const total=Number((await capacity().count({count:'id'}).first())?.count||0),provider=Number((await capacity().where({account_id:account.id}).count({count:'id'}).first())?.count||0);
     if(total>=settings.application_cap||provider>=settings.provider_cap){const earliest=await capacity().min({oldest:trx.raw('COALESCE(accepted_at, submitted_at, reserved_at)')}).first();return delayJob(trx,job,'Rolling 24-hour sending capacity reached',new Date(Math.max(Date.now()+60000,new Date(earliest?.oldest as any).getTime()+86401000)));}
     const recent=await trx('send_attempts').where({account_id:account.id}).whereIn('status',consumedStatuses).orderByRaw('COALESCE(accepted_at, submitted_at, reserved_at) DESC').first();
-    const spaced=recent?new Date(new Date(recent.accepted_at||recent.submitted_at||recent.reserved_at).getTime()+settings.min_interval_seconds*1000):now();if(payload.is_manual!==true&&spaced>now())return delayJob(trx,job,'Minimum interval between messages',spaced);
+    const timing=await campaignOptions(trx,job,payload);const interval=timing.send_interval_seconds??settings.min_interval_seconds;const spaced=recent?new Date(new Date(recent.accepted_at||recent.submitted_at||recent.reserved_at).getTime()+interval*1000):now();if(payload.is_manual!==true&&spaced>now())return delayJob(trx,job,'Minimum interval between messages',spaced);
     const enrollment=job.enrollment_id?await trx('enrollments').where({id:job.enrollment_id}).first():null,contact=payload.is_manual===true?await trx('contacts').where({email:payload.manual_recipient}).first():await trx('contacts').where({id:enrollment?.contact_id||payload.contact_id}).first();
     const recipient=payload.is_manual===true?payload.manual_recipient:payload.is_reply?payload.reply_recipient:contact.email;
     let content=payload.content,version:any=null;
@@ -184,7 +189,7 @@ export async function finishAccepted(attemptId:string,acceptedAt:Date=now(),exis
     if(attempt.enrollment_id){const enrollment=await trx('enrollments').where({id:attempt.enrollment_id}).forUpdate().first();if(enrollment&&enrollment.status==='active'){
       const nextPosition=Number(job.step_position)+1,next=await trx('sequence_steps').where({version_id:enrollment.version_id,position:nextPosition}).first();
       await trx('enrollments').where({id:enrollment.id}).update({next_step:nextPosition,last_accepted_at:acceptedAt,status:next?'active':'completed',updated_at:now()});
-      if(next){const settings=await getSettings(trx);await trx('jobs').insert({id:id(),kind:'send',account_id:enrollment.account_id,campaign_id:enrollment.campaign_id,enrollment_id:enrollment.id,step_position:nextPosition,payload:JSON.stringify({}),status:'queued',due_at:followupTime(acceptedAt,next.delay_days,settings),attempts:0,created_at:now(),updated_at:now()}).onConflict(['enrollment_id','step_position']).ignore();}
+      if(next){const settings=await getSettings(trx);await trx('jobs').insert({id:id(),kind:'send',account_id:enrollment.account_id,campaign_id:enrollment.campaign_id,enrollment_id:enrollment.id,step_position:nextPosition,payload:JSON.stringify({}),status:'queued',due_at:followupForStep(acceptedAt,next,settings),attempts:0,created_at:now(),updated_at:now()}).onConflict(['enrollment_id','step_position']).ignore();}
       const stage=await trx('pipeline_stages').where({name:'Contacted'}).first(),newStage=await trx('pipeline_stages').where({name:'New'}).first();if(stage&&newStage)await trx('contacts').where({id:enrollment.contact_id,stage_id:newStage.id}).update({stage_id:stage.id,updated_at:now()});
     }
       const remaining=await trx('enrollments').where({campaign_id:attempt.campaign_id}).whereIn('status',['active','paused']).first();if(!remaining)await trx('campaigns').where({id:attempt.campaign_id}).whereIn('status',['active','scheduled']).update({status:'completed',updated_at:now()});

@@ -1,5 +1,9 @@
 # Testing and acceptance
 
+## Campaign mini editor, saved contacts and timing (2026-11-06)
+
+The isolated suite passes 209 tests across 20 files; production build/typechecks and all 29 browser checks pass. New API/worker checks verify saved-contact defaults, sending a test/campaign for unknown-consent contacts without changing consent history, revocation at actual sending, retained strict opt-in mode, per-campaign reservation intervals, invalid duration rejection, and follow-up scheduling/revision from SMTP acceptance. A segment audience now includes saved unknown-consent contacts under the selected rule. Browser checks exercise mini-editor typing/cursor personalization, full block editing with formatting/links/images/buttons/templates, the recipient-policy choice, a 60-second send interval, and a five-minute follow-up that saves and reopens as five minutes. The browser test caught and verified the fix for an implicit minutes-to-hours unit switch. Desktop/mobile screenshots were reviewed. All mail used fake transports; live sending remained disabled and no deployment occurred.
+
 ## Campaign deletion (2026-11-06)
 
 The disposable MariaDB suite passes 204 tests across 20 files; production build/typechecks and all 29 browser checks pass. API tests cover all six campaign statuses, idempotency, action denial after deletion, session/permissions, reserved/queued/test cancellation, accepted-message/token retention, unknown outcomes held, SMTP-submitting rejection, and deletion between reservation and submission with no SMTP call. Browser checks verify delete controls for each status, Cancel behavior, successful list/detail deletion and return to the list. The confirmation screenshot was visually reviewed. Live sending stayed disabled; only isolated fixtures were deleted.

@@ -1,3 +1,4 @@
+import {ensureCampaignTiming} from './campaign-timing.js';
 import {ensureCampaignDeletion,deleteCampaign} from './campaign-deletion.js';
 import {ensureCampaignDesigns,normalizeCampaignDraft,assertCampaignReady} from './campaign-designs.js';
 import {designSchema} from '../shared/campaign-design.js';
@@ -11,7 +12,7 @@ import { ensureProspectDeletion } from './prospect-deletion.js';
 import {messageOpenActivity} from './open-activity.js';
 import { HttpError, id, audit, normalizeEmail } from './lib/util.js';
 import { getSettings } from './settings.js';
-import { renderStep, sanitizeEmail, followupTime, nextSendingTime } from './engine/content.js';
+import { renderStep, sanitizeEmail, followupForStep, nextSendingTime } from './engine/content.js';
 import { contactEligibility, manualRecipientEligibility, stopContact } from './engine/policy.js';
 import { prepareMarketing } from './tracking.js';
 import { runWorker } from './worker.js';
@@ -20,8 +21,8 @@ import { ensureMailFeatures, enrichMail, manualContentSchema, manualContent, enc
 import { ensureInboxReads, readMessageIds } from './engine/inbox-reads.js';
 import { ensureInboxFolders, spamMessageIds } from './engine/inbox-folders.js';
 
-const stepSchema = z.object({subject:z.string().max(998).refine(s=>!/[\r\n]/.test(s),'Subject must be one line'),body_text:z.string().max(100000),body_html:z.string().max(200000).nullable().optional(),delay_days:z.number().int().min(0).max(365).default(0),design:designSchema.nullable().optional(),preview_text:z.string().max(300).default('')});
-const draftSchema = z.object({name:z.string().trim().min(1).max(200),account_id:z.string().uuid(),email_type:z.enum(['plain','designed']).optional(),sender_name:z.string().max(200).refine(v=>!/[\r\n]/.test(v)).default(''),reply_to:z.union([z.string().email().max(254),z.literal('')]).default(''),steps:z.array(stepSchema).min(1).max(10),contact_ids:z.array(z.string().uuid()).max(10000).default([]),open_tracking:z.boolean().default(false),click_tracking:z.boolean().default(false),scheduled_at:z.string().datetime({offset:true}).nullable().optional()});
+const stepSchema = z.object({subject:z.string().max(998).refine(s=>!/[\r\n]/.test(s),'Subject must be one line'),body_text:z.string().max(100000),body_html:z.string().max(200000).nullable().optional(),delay_days:z.number().int().min(0).max(365).default(0),delay_seconds:z.number().int().min(0).max(31536000).nullable().optional(),delay_unit:z.enum(['seconds','minutes','hours','days']).optional(),design:designSchema.nullable().optional(),preview_text:z.string().max(300).default('')});
+const draftSchema = z.object({name:z.string().trim().min(1).max(200),account_id:z.string().uuid(),email_type:z.enum(['plain','designed']).optional(),recipient_policy:z.enum(['saved_contacts','consent_required']).default('saved_contacts'),send_interval_seconds:z.number().int().min(60).max(86400).nullable().default(null),sender_name:z.string().max(200).refine(v=>!/[\r\n]/.test(v)).default(''),reply_to:z.union([z.string().email().max(254),z.literal('')]).default(''),steps:z.array(stepSchema).min(1).max(10),contact_ids:z.array(z.string().uuid()).max(10000).default([]),open_tracking:z.boolean().default(false),click_tracking:z.boolean().default(false),scheduled_at:z.string().datetime({offset:true}).nullable().optional()});
 const templateSchema = z.object({name:z.string().trim().min(1).max(200),subject:stepSchema.shape.subject,body_text:stepSchema.shape.body_text,body_html:stepSchema.shape.body_html,design:designSchema.nullable().optional(),preview_text:z.string().max(300).default(''),email_type:z.enum(['plain','designed']).nullable().optional()});
 const parseContact = (c:any) => ({...c,tags:json(c.tags,[]),custom_fields:json(c.custom_fields,{})});
 const publicCampaign = (c:any) => ({...c,draft:json(c.draft,{}),open_tracking:!!c.open_tracking,click_tracking:!!c.click_tracking});
@@ -34,7 +35,7 @@ async function audience(draft: any, account: any, trx: Database = db) {
   const byId = new Map(contacts.map(c=>[c.id,c]));
   for (const contactId of contactIds) {
     const raw = byId.get(contactId), contact = raw ? parseContact(raw) : null;
-    let reason = await contactEligibility(contact,account,trx);
+    let reason = await contactEligibility(contact,account,trx,{allowSavedContacts:draft.recipient_policy==='saved_contacts'});
     if (!reason) try { for (const step of draft.steps) renderStep(step,contact,draft); } catch(error) { reason = (error as Error).message; }
     (reason ? excluded : included).push({id:contactId,email:contact?.email || '',company_name:contact?.company_name || '',reason});
   }
@@ -46,12 +47,12 @@ async function publish(campaign: any, draft: any, actorId: string, trx: Database
   const versionId = id(), number = Number(latest?.number || 0) + 1;
   const snapshot = {...draft,account_id:campaign.account_id,steps:draft.steps.map((s:any,i:number)=>({...s,body_html:s.body_html?sanitizeEmail(s.body_html,!!s.design):null,delay_days:i===0?0:s.delay_days}))};
   await trx('campaign_versions').insert({id:versionId,campaign_id:campaign.id,number,snapshot:JSON.stringify(snapshot),created_by:actorId,created_at:new Date()});
-  await trx('sequence_steps').insert(snapshot.steps.map((s:any,position:number)=>({id:id(),version_id:versionId,position,subject:s.subject,body_text:s.body_text,body_html:s.body_html,delay_days:s.delay_days,preview_text:s.preview_text||'',design:s.design?JSON.stringify(s.design):null})));
+  await trx('sequence_steps').insert(snapshot.steps.map((s:any,position:number)=>({id:id(),version_id:versionId,position,subject:s.subject,body_text:s.body_text,body_html:s.body_html,delay_days:s.delay_days,delay_seconds:s.delay_seconds??null,preview_text:s.preview_text||'',design:s.design?JSON.stringify(s.design):null})));
   return {id:versionId,number,snapshot};
 }
 
 export const campaignRouter = Router();
-campaignRouter.use(requireUser,async(_req,_res,next)=>{await ensureCampaignDesigns();await ensureCampaignDeletion();next();});
+campaignRouter.use(requireUser,async(_req,_res,next)=>{await ensureCampaignDesigns();await ensureCampaignDeletion();await ensureCampaignTiming();next();});
 campaignRouter.get('/',async(_req,res)=>{
   const accepted=db('send_attempts').select('campaign_id').count({accepted:'id'}).where({status:'accepted',is_test:false}).groupBy('campaign_id').as('accepted_totals');
   const replies=db('messages').select('campaign_id').count({human_replies:'id'}).where({direction:'inbound',classification:'human_reply',is_test:false}).groupBy('campaign_id').as('reply_totals');
@@ -104,11 +105,11 @@ campaignRouter.post('/:id/test',permit('campaigns:write'),async(req,res)=>{
   await campaignOr404(c.id,trx);
   const contact=input.confirm_test_address?await registerControlledTestContact(email,req.user!.id,trx):await trx('contacts').where({email}).first();
   if(!contact)throw new HttpError(400,'This test address is not in this workspace. Confirm that you control it below, or add it in Prospects with test consent.');
-  const reason=await contactEligibility(contact,account,trx,{reply:true});if(reason)throw new HttpError(400,reason);
+  const reason=await contactEligibility(contact,account,trx,{reply:true,allowSavedContacts:draft.recipient_policy==='saved_contacts'});if(reason)throw new HttpError(400,reason);
   let content;try{assertCampaignReady(draft);content=renderStep(draft.steps[0],parseContact(contact),draft);}catch(error){throw new HttpError(400,(error as Error).message);}
-  const job={id:id(),kind:'send',account_id:c.account_id,campaign_id:c.id,payload:JSON.stringify({is_test:true,email_type:draft.email_type,sender_name:draft.sender_name,reply_to:draft.reply_to,contact_id:contact.id,content:{...content,subject:('[TEST] '+content.subject).slice(0,998)},open_tracking:false,click_tracking:false}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()};
+  const job={id:id(),kind:'send',account_id:c.account_id,campaign_id:c.id,payload:JSON.stringify({is_test:true,recipient_policy:draft.recipient_policy,send_interval_seconds:draft.send_interval_seconds,email_type:draft.email_type,sender_name:draft.sender_name,reply_to:draft.reply_to,contact_id:contact.id,content:{...content,subject:('[TEST] '+content.subject).slice(0,998)},open_tracking:false,click_tracking:false}),status:'queued',due_at:new Date(),attempts:0,created_at:new Date(),updated_at:new Date()};
   await trx('jobs').insert(job);await audit(req.user!.id,'campaign.test_queued','campaign',c.id,{contact_id:contact.id},trx);return job;});
-  res.status(202).json({job_id:job.id,message:'Test queued. Sending remains subject to pause, consent, sync, window and capacity checks.'});
+  res.status(202).json({job_id:job.id,message:'Test queued. Sending follows recipient eligibility, opt-outs, mailbox capacity and the configured schedule.'});
 });
 campaignRouter.post('/:id/launch',permit('campaigns:write'),async(req,res)=>{
   const result=await db.transaction(async trx=>{
@@ -145,7 +146,7 @@ campaignRouter.post('/:id/revise',permit('campaigns:write'),async(req,res)=>{
       const pending=await trx('jobs').where({enrollment_id:e.id}).whereIn('status',['queued','failed','cancelled']);
       for(const job of pending){
         if(!step||Number(job.step_position)!==Number(e.next_step)){await trx('jobs').where({id:job.id}).update({status:'cancelled',last_error:'Step removed by explicit campaign revision',updated_at:new Date()});continue;}
-        if(e.last_accepted_at)await trx('jobs').where({id:job.id}).update({due_at:followupTime(new Date(e.last_accepted_at),step.delay_days,settings),updated_at:new Date()});
+        if(e.last_accepted_at)await trx('jobs').where({id:job.id}).update({due_at:followupForStep(new Date(e.last_accepted_at),step,settings),updated_at:new Date()});
         const attempt=await trx('send_attempts').where({job_id:job.id}).first();if(!attempt||['accepted','unknown','submitting'].includes(attempt.status))continue;
         const message=await trx('messages').where({attempt_id:attempt.id}).first();if(!message)continue;
         // Only definite, unsent content can be replaced. Accepted content and

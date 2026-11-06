@@ -165,3 +165,24 @@ input:focus, select:focus, textarea:focus { border-color: #3863ff; box-shadow: 0
 .campaign-row-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; }
 .campaign-row-actions .icon-button[title="Delete campaign"] { color:#a74343; }
 .campaign-row-actions .icon-button[title="Delete campaign"]:hover { background:#fff0f0; color:#912828; }
+
+/* Campaign mini editor keeps one section in focus without discarding design blocks. */
+.mini-editor-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:12px; }
+.mini-editor-heading p { font-size:12px; color:var(--muted); margin-top:3px; }
+.mini-editor-modes { display:flex; gap:4px; flex-shrink:0; }
+.mini-editor-modes button,.design-block-tabs button { padding:6px 9px; font-size:12px; border:1px solid var(--border); border-radius:6px; background:#fff; }
+.mini-editor-modes button[aria-pressed=true],.design-block-tabs button[aria-pressed=true] { background:#edf3ff; color:#244ac4; border-color:#b8caff; }
+.design-block-tabs { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0; }
+.email-design-editor.compact .design-block:not(.selected) { display:none; }
+.design-layout-settings { margin:8px 0 12px; }
+.design-layout-settings > summary { cursor:pointer; font-size:13px; color:var(--muted); }
+.design-layout-settings .design-settings { margin-top:10px; }
+.design-rich-toolbar { position:sticky; top:0; z-index:1; background:#f8faff; border-bottom:1px solid var(--border); padding:8px; }
+.design-rich-toolbar button { display:inline-flex; align-items:center; justify-content:center; min-width:30px; min-height:30px; padding:6px; }
+.design-rich-content { min-height:200px; padding:14px; background:#fff; outline-offset:-3px; }
+.design-rich-content a { text-decoration:underline; color:#2352ff; }
+.campaign-delay { display:flex; gap:8px; align-items:end; }
+.campaign-delay .field { margin-bottom:0; }
+.campaign-delay input { width:95px; }
+.campaign-delay select { min-width:95px; }
+@media(max-width:640px) { .mini-editor-heading { flex-direction:column; align-items:flex-start; } .campaign-delay { align-self:stretch; } .design-rich-toolbar { position:static; } }

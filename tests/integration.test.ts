@@ -62,7 +62,7 @@ describe.skipIf(!enabled)('real database API vertical slice (isolated *_test onl
     const all=await owner.get('/api/segments/'+segment+'/members');expect(all.body.contact_ids).toHaveLength(121);expect((await owner.get('/api/contacts?segment_id='+segment+'&pageSize=25')).body.items).toHaveLength(25);
     const draft=await owner.post('/api/campaigns').set('x-csrf-token',csrf).send({name:'Segment snapshot',account_id:accountId,contact_ids:all.body.contact_ids,steps:[{subject:'Hello',body_text:'Hello',delay_days:0}]});expect(draft.status).toBe(201);
     await owner.post('/api/segments/'+segment+'/members').set('x-csrf-token',csrf).send({contact_ids:[manual.body.id]});
-    const saved=await owner.get('/api/campaigns/'+draft.body.id);expect(saved.body.draft.contact_ids).toHaveLength(121);expect(saved.body.audience.included).toHaveLength(0);expect(saved.body.audience.excluded).toHaveLength(121);
+    const saved=await owner.get('/api/campaigns/'+draft.body.id);expect(saved.body.draft.contact_ids).toHaveLength(121);expect(saved.body.audience.included).toHaveLength(121);expect(saved.body.audience.excluded).toHaveLength(0);
   });
   it('automatically groups historical and future website inquiries, including previously existing contacts',async()=>{
     const {ensureWebsiteLeads,receiveWebsiteLead}=await import('../server/website-leads.js');await ensureWebsiteLeads();

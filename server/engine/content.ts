@@ -55,6 +55,9 @@ export function followupTime(acceptedAt: Date, delayDays: number, settings: Wind
   const local = DateTime.fromJSDate(acceptedAt, {zone:settings.timezone}).plus({days:delayDays});
   return nextSendingTime(local.toUTC().toJSDate(), settings);
 }
+export function followupForStep(acceptedAt:Date,step:{delay_days:number;delay_seconds?:number|null},settings:WindowSettings){
+  return step.delay_seconds!=null?nextSendingTime(new Date(acceptedAt.getTime()+step.delay_seconds*1000),settings):followupTime(acceptedAt,step.delay_days,settings);
+}
 
 export type Outcome = 'temporary'|'permanent'|'auth'|'limit'|'unknown';
 export function smtpFailure(error: any, options: {submissionStarted?:boolean} = {}): {status: Outcome; retryable: boolean; code: string; message: string} {

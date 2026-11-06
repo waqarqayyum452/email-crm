@@ -47,11 +47,12 @@ export async function suppressEmail(email: string, reason: string, source: strin
   return existingTrx ? run(existingTrx) : db.transaction(run);
 }
 
-export async function contactEligibility(contact: any, account: any, trx: Database = db, options: {reply?:boolean} = {}): Promise<string | null> {
+export async function contactEligibility(contact: any, account: any, trx: Database = db, options: {reply?:boolean;allowSavedContacts?:boolean} = {}): Promise<string | null> {
   if (!contact||contact.deleted_at) return 'Contact no longer exists';
   if (await trx('suppressions').where({email:contact.email}).first()) return 'Address is suppressed agency-wide';
-  if (!['opted_in','test'].includes(contact.consent_status)) return 'Documented opt-in or controlled-test consent is required';
-  if (contact.consent_status === 'opted_in' && !contact.consent_evidence?.trim()) return 'Opt-in evidence is required';
+  if(contact.consent_status==='revoked')return 'Consent for this address has been revoked';
+  if (!options.allowSavedContacts&&!['opted_in','test'].includes(contact.consent_status)) return 'Documented opt-in or controlled-test consent is required';
+  if (!options.allowSavedContacts&&contact.consent_status === 'opted_in' && !contact.consent_evidence?.trim()) return 'Opt-in evidence is required';
   if (account.provider_policy !== 'opt_in_only') return 'Unsupported provider policy';
   if (!options.reply) {
     const previous = await trx('messages').where({contact_id:contact.id,direction:'inbound'}).where(builder=>builder.where('classification','human_reply').orWhere(inner=>inner.whereIn('classification',['automatic','uncertain','delivery_failure']).where(review=>review.whereNull('review_action').orWhereNot('review_action','resume')))).first();

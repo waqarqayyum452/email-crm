@@ -180,3 +180,100 @@ input:focus, select:focus, textarea:focus { border-color: #3863ff; box-shadow: 0
 .campaign-delay input { width:95px; }
 .campaign-delay select { min-width:95px; }
 @media(max-width:640px) { .mini-editor-heading { flex-direction:column; align-items:flex-start; } .campaign-delay { align-self:stretch; } .design-rich-toolbar { position:static; } }
+
+/* Full-screen campaign design workspace. */
+.modal-backdrop.fullscreen-backdrop{padding:0;align-items:stretch}
+.modal.wide.fullscreen{width:100%;max-width:none;height:100dvh;max-height:100dvh;border-radius:0;display:flex;flex-direction:column}
+.modal.fullscreen>.modal-header{flex-shrink:0;padding:16px 28px}
+.modal.fullscreen>.modal-body{flex:1;min-height:0;overflow:auto;padding:20px 28px 0}
+.fullscreen .campaign-composer-form>.form-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:16px}
+.fullscreen .campaign-composer-form>.form-grid .field{margin-bottom:12px}
+.fullscreen .sequence-step-body{padding:20px}
+.fullscreen .campaign-composer-footer{position:sticky;bottom:0;z-index:5;background:#fff;border-top:1px solid var(--border);padding:14px 0;margin-top:24px;box-shadow:0 -8px 20px #18243b08;flex-wrap:wrap}
+.campaign-footer-save-state{margin-right:auto;font-size:13px;color:var(--muted)}
+.design-studio-layout{display:grid;grid-template-columns:240px minmax(0,1fr);border:1px solid var(--border);border-radius:12px;overflow:clip;align-items:start}
+.design-studio-sidebar{background:#fff;padding:20px;border-right:1px solid var(--border);position:sticky;top:0;max-height:85dvh;overflow:auto}
+.design-studio-sidebar h3{font-size:15px;margin:0 0 8px}
+.design-studio-sidebar .design-add-blocks{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:16px 0 24px}
+.design-studio-sidebar .design-add-blocks button{justify-content:flex-start;padding:10px 8px;font-size:12px;cursor:grab}
+.design-studio-sidebar .design-settings{display:grid;grid-template-columns:1fr;gap:0;margin-top:16px}
+.design-studio-sidebar .field{min-width:0;margin-bottom:14px}
+.design-studio-canvas{padding:28px;min-width:0;min-height:650px}
+.design-canvas-paper{width:100%;margin:auto;box-shadow:0 4px 20px #14294412;min-height:500px;box-sizing:border-box}
+.design-studio .design-block{margin:0;border-radius:5px;border:1px solid #dce3ec;padding:12px;box-shadow:none;transition:border-color .12s}
+.design-studio .design-block.selected{border-color:#3863ff;box-shadow:0 0 0 1px #3863ff}
+.design-block-heading>strong{display:flex;align-items:center;gap:6px}
+.design-block-heading .design-drag-handle{display:inline-flex;cursor:grab;touch-action:none;padding:4px}
+.design-drag-handle:active{cursor:grabbing}
+.design-drop-zone{display:flex;justify-content:center;align-items:center;min-height:22px;font-size:11px;color:#6b7c99;border:1px dashed transparent;margin:4px 0;transition:background .12s,border-color .12s}
+.design-studio-canvas:hover .design-drop-zone{border-color:#b8c6dd}
+.design-drop-zone.over{background:#e4edff;color:#244ac4;border-color:#3863ff;min-height:44px}
+.design-studio .design-rich-content{min-height:100px}
+.design-studio .panel-note{font-size:12px;margin-top:0}
+.design-studio .design-block-settings .field{margin-bottom:6px}
+@media(min-width:1400px){.fullscreen .design-studio-layout{grid-template-columns:270px minmax(0,1fr)}.fullscreen .design-studio-canvas{padding:36px}}
+@media(max-width:1000px){.fullscreen .campaign-composer-form>.form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.design-studio-layout{grid-template-columns:190px minmax(0,1fr)}.design-studio-sidebar{padding:12px}.design-studio-sidebar .design-add-blocks{grid-template-columns:1fr}.design-studio-canvas{padding:14px}.fullscreen .sequence-step-body{padding:12px}}
+@media(max-width:640px){.modal.fullscreen>.modal-body{padding:12px 10px 0}.modal.fullscreen>.modal-header{padding:14px}.fullscreen .campaign-composer-form>.form-grid{grid-template-columns:1fr}.design-studio-layout{display:block}.design-studio-sidebar{position:static;max-height:none;border-right:0;border-bottom:1px solid var(--border)}.design-studio-sidebar .design-add-blocks{grid-template-columns:repeat(3,minmax(0,1fr))}.design-studio-sidebar .design-settings{grid-template-columns:1fr 1fr;gap:10px}.design-studio-canvas{padding:8px}.campaign-composer-footer .button{flex:1}.campaign-footer-save-state{width:100%}}
+
+.design-spacer-preview{display:flex;align-items:center;justify-content:center;background:repeating-linear-gradient(45deg,#f4f7fb,#f4f7fb 6px,#edf1f7 6px,#edf1f7 12px);color:#697991;font-size:11px;min-height:4px}
+
+/* Sidebar inspector and a content-only design canvas. */
+.sidebar-editor .design-studio-layout{grid-template-columns:350px minmax(0,1fr)}
+.sidebar-editor .design-studio-sidebar{max-height:80dvh;padding:18px;align-self:start}
+.sidebar-editor .design-studio-right{min-width:0}
+.design-canvas-toolbar{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:14px 18px;background:#fff;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:2}
+.design-canvas-toolbar>div{display:flex;gap:6px}
+.design-canvas-toolbar .button{font-size:12px;min-height:34px;padding:7px 10px}
+.design-section-list{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px}
+.design-section-list button,.design-inspector-actions button{background:#fff;border:1px solid var(--border);border-radius:5px;padding:7px 9px;color:var(--ink);font-size:12px;cursor:pointer}
+.design-section-list button[aria-pressed=true]{background:#edf3ff;border-color:#3863ff;color:#244ac4}
+.design-inspector-actions{display:flex;gap:6px;margin:10px 0 18px}
+.design-inspector-actions button:disabled{opacity:.4;cursor:default}
+.design-section-inspector{border-top:1px solid var(--border);padding-top:18px;margin-bottom:22px}
+.design-section-inspector .form-grid,.design-section-inspector .design-block-settings{display:grid;grid-template-columns:1fr;gap:0}
+.design-section-inspector .design-block-settings>.field{min-width:0}
+.design-section-inspector .design-rich-toolbar{position:static}
+.design-section-inspector .design-rich-content{min-height:170px;font-size:15px}
+.design-section-inspector .design-rich-toolbar select{max-width:100%}
+.design-section-inspector .design-link-row{flex-direction:column}
+.design-section-inspector .design-rich{margin-bottom:16px}
+.sidebar-editor .design-layout-settings{border-top:1px solid var(--border);padding-top:16px;margin-bottom:18px}
+.sidebar-editor .design-studio-canvas{padding:30px;min-height:650px}
+.sidebar-editor .design-canvas-paper{min-height:450px}
+.sidebar-editor .design-block{border:1px solid transparent;border-radius:0;padding:0;cursor:grab;outline:none}
+.sidebar-editor .design-block:hover{border-color:#a3b8ee}
+.sidebar-editor .design-block.selected,.sidebar-editor .design-block:focus-visible{border-color:#3863ff;box-shadow:0 0 0 1px #3863ff}
+.design-content-placeholder{color:#94a0b3;font:14px/1.6 Arial,sans-serif}
+.design-image-placeholder{padding:45px 16px;background:#f2f5f9;text-align:center;border:1px dashed #c4cddd}
+.design-canvas-text{overflow-wrap:anywhere;min-height:24px}
+.design-canvas-text p{margin:0 0 12px}.design-canvas-text a{color:#2352ff;text-decoration:underline}.design-canvas-text ul,.design-canvas-text ol{padding-left:24px}
+.design-studio-rendered{background:#fff;box-shadow:0 4px 20px #14294412}
+.sidebar-editor .design-drop-zone{min-height:14px;font-size:10px;margin:2px 0;color:transparent}
+.sidebar-editor .design-studio-canvas:hover .design-drop-zone{color:#6b7c99}
+.sidebar-editor .design-drop-zone.over{color:#244ac4;min-height:36px}
+@media(min-width:1400px){.fullscreen .sidebar-editor .design-studio-layout{grid-template-columns:370px minmax(0,1fr)}}
+@media(max-width:1000px){.sidebar-editor .design-studio-layout{grid-template-columns:300px minmax(0,1fr)}.sidebar-editor .design-studio-canvas{padding:16px}}
+@media(max-width:640px){.sidebar-editor .design-studio-layout{display:flex;flex-direction:column}.sidebar-editor .design-studio-sidebar,.sidebar-editor .design-studio-right{width:100%;max-height:none;box-sizing:border-box}.sidebar-editor .design-studio-sidebar{position:static}.design-canvas-toolbar{position:static;padding:10px}.sidebar-editor .design-studio-canvas{padding:10px}}
+
+/* Explicit layers without automatic canvas gaps. */
+.design-layer-row{display:flex;align-items:stretch;border:1px solid var(--border);border-radius:6px;width:100%;overflow:hidden;background:#fff}
+.design-layer-row>button:first-child{display:flex;align-items:center;gap:8px;flex:1;border:0;border-radius:0;text-align:left}
+.design-layer-row>.design-layer-delete{border:0;border-left:1px solid var(--border);border-radius:0;color:#b32d42;font-size:11px}
+.sidebar-editor .design-section-list{display:flex;flex-direction:column;gap:6px}
+.sidebar-editor .design-canvas-paper{min-height:0}
+.sidebar-editor .design-drop-zone{position:relative;height:0;min-height:0;margin:0;padding:0;border:0;font-size:0;z-index:1}
+.sidebar-editor .design-drop-zone::after{content:'';position:absolute;left:0;right:0;top:-5px;height:10px}
+.sidebar-editor.drag-active .design-drop-zone{height:14px;min-height:14px;background:#eaf0ff}
+.sidebar-editor.drag-active .design-drop-zone.over{height:28px;min-height:28px;border:1px dashed #3863ff}
+.sidebar-editor .design-canvas-text p{margin:0}
+.design-preview-device-controls{display:flex;gap:8px;margin-bottom:18px}
+.campaign-review-summary{border-bottom:1px solid var(--border);padding:16px 0}
+.campaign-review-summary p{color:var(--muted);margin-top:8px}
+.campaign-composer-form>.campaign-tabs{margin:16px 0 24px;flex-wrap:wrap;gap:18px}
+.campaign-composer-form>.form-grid{max-width:1000px}
+
+.sidebar-editor .design-drop-zone{height:8px;min-height:8px;margin:-4px 0;opacity:0}.sidebar-editor.drag-active .design-drop-zone{height:14px;min-height:14px;margin:-7px 0;opacity:1}.sidebar-editor.drag-active .design-drop-zone.over{height:28px;min-height:28px;margin:-14px 0}
+
+.sidebar-editor .design-canvas-paper{display:flow-root}.sidebar-editor .design-canvas-paper>div{display:flow-root}.sidebar-editor .design-block{border:0;outline:1px solid transparent;outline-offset:-1px}.sidebar-editor .design-block.selected,.sidebar-editor .design-block:focus-visible{outline-color:#3863ff;box-shadow:none}.sidebar-editor .design-block:hover{outline-color:#a3b8ee}
+
+.sidebar-editor .design-drop-zone{pointer-events:none}
